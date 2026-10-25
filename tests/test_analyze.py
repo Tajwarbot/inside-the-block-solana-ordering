@@ -207,11 +207,14 @@ def test_send_rank_is_used_instead_of_planned_send_seq(tmp_path):
     assert bursts[0]["ts"] == 1.0
 
 
-def _synthetic_burst(label="C", arm="same", mode="desc", fee_dir=1, seq_dir=1, burst=0):
+def _synthetic_burst(label="C", arm="same", mode="desc", fee_dir=1, seq_dir=None, burst=0):
     from obp.analyze import kendall
 
     idx = list(range(5))
     fee = [-(5 - i) for i in idx] if fee_dir > 0 else [-(i + 1) for i in idx]
+    if seq_dir is None:
+        # desc sends the highest fee first (aligned); asc sends it last (opposed).
+        seq_dir = 1 if mode == "desc" else -1
     seq = idx if seq_dir > 0 else [4 - i for i in idx]
     return {"label": label, "payer_arm": arm, "order_mode": mode, "n": 5,
             "idx": idx, "fee": fee, "seq": seq,
@@ -224,26 +227,33 @@ def _verdict_for(bursts):
     return _verdicts(bursts)[0]["verdict"]
 
 
-def test_verdict_uses_only_same_arm_desc_and_shuffle():
-    bursts = [_synthetic_burst(mode="desc", seq_dir=-1),
+def test_synthetic_rotations_are_aligned_for_desc_and_opposed_for_asc():
+    desc = _synthetic_burst(mode="desc")
+    asc = _synthetic_burst(mode="asc")
+    assert desc["tf"] == desc["ts"] == 1
+    assert asc["tf"] * asc["ts"] == -1
+
+
+def test_verdict_uses_only_same_arm_asc_and_shuffle():
+    bursts = [_synthetic_burst(mode="asc", fee_dir=1),
               _synthetic_burst(mode="shuffle", seq_dir=-1, burst=1)]
     # Multi-payer rows would look like H2 if they leaked into the verdict.
-    bursts.append(_synthetic_burst(arm="multi", mode="desc", fee_dir=-1, seq_dir=1, burst=2))
+    bursts.append(_synthetic_burst(arm="multi", mode="asc", fee_dir=-1, seq_dir=1, burst=2))
     assert _verdict_for(bursts) == "H1 fee rule"
 
 
-def test_verdict_h2_needs_desc_and_shuffle_send_order():
-    bursts = [_synthetic_burst(mode="desc", fee_dir=-1, seq_dir=1),
+def test_verdict_h2_needs_asc_and_shuffle_send_order():
+    bursts = [_synthetic_burst(mode="asc", fee_dir=-1, seq_dir=1),
               _synthetic_burst(mode="shuffle", fee_dir=-1, seq_dir=1, burst=1)]
     assert _verdict_for(bursts) == "H2 arrival rule"
 
 
-def test_verdict_mixed_and_no_rule_and_asc_is_not_primary():
-    both = [_synthetic_burst(mode="desc", fee_dir=1, seq_dir=1),
+def test_verdict_mixed_and_no_rule_and_desc_is_not_primary():
+    both = [_synthetic_burst(mode="asc", fee_dir=1, seq_dir=1),
             _synthetic_burst(mode="shuffle", fee_dir=1, seq_dir=1, burst=1)]
     assert _verdict_for(both).startswith("mixed")
-    neither = [_synthetic_burst(mode="desc", fee_dir=-1, seq_dir=-1),
+    neither = [_synthetic_burst(mode="asc", fee_dir=-1, seq_dir=-1),
                _synthetic_burst(mode="shuffle", fee_dir=-1, seq_dir=-1, burst=1)]
     assert _verdict_for(neither) == "no rule detected (H0 not rejected)"
-    asc_only = [_synthetic_burst(mode="asc", fee_dir=1, seq_dir=1)]
-    assert _verdict_for(asc_only) == "no rule detected (H0 not rejected)"
+    desc_only = [_synthetic_burst(mode="desc", fee_dir=1, seq_dir=1)]
+    assert _verdict_for(desc_only) == "insufficient data"

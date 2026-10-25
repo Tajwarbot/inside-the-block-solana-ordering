@@ -33,9 +33,13 @@ same block are compared. Primary statistics keep only rows with `in_target_windo
 ### Fee ladder independent of send order
 
 A burst sends the same five fee levels in one of three rotations: ascending, descending or
-shuffled. The mode rotates by burst number. This separates fee from send order. If position
-tracks fee under all three rotations, the data supports a fee rule. If it tracks send sequence
-instead, the data supports an arrival-order rule. If it tracks neither, the result is noise.
+shuffled. The mode rotates by burst number. This separates fee from send order. Descending sends
+the highest fee first, so fee order and send order are aligned there; a pure arrival rule would
+also produce a positive fee tau, making descending the confounded rotation. Ascending sends the
+highest fee last, so fee and send order are opposed; ascending is therefore the discriminating
+rotation. The pre-registered primary set is ascending + shuffled. If position tracks fee in
+ascending bursts, the data supports a fee rule. If it tracks send sequence instead, the data
+supports an arrival-order rule. If it tracks neither, the result is noise.
 
 ### Same-payer and multi-payer arms
 
@@ -70,8 +74,10 @@ fee is reserved.
 
 Each row keeps the burst-level `slot_at_send`/`slot_after_send` and also records a per-transaction
 `est_slot_at_send` = `slot_at_send + floor((send_ts_ns - t_wait_return_ns) / 0.212)`. The per-tx
-`send_offset`, `in_window_at_send` and `on_time` are based on that estimate, so a burst that spans
-more than one slot is not mislabelled.
+`send_offset`, `in_window_at_send`, `send_phase` and `on_time` are based on that estimate, so a
+burst that spans more than one slot is not mislabelled. `send_ts_ns` is taken immediately before
+the HTTP send and `send_done_ns` immediately after it. A burst is marked `burst_late=True` when
+its post-send slot is at or after `window_start + 4`.
 
 The scheduler is not perfectly predictable from the schedule alone, so a separate step confirms
 what actually happened.
@@ -141,8 +147,8 @@ primary evidence is always transactions we sent ourselves.
 (`--send-mode seq`, 20 ms gap), and can run the sends in parallel (`--send-mode parallel`) for a
 separate comparison. The actual order is recorded as `send_rank`, derived by sorting
 `send_ts_ns`, and `tau_send` uses `send_rank` (falling back to `send_seq` only for older files).
-Because ascending, descending and shuffled rotations repeat across bursts, a stable relationship
-between actual send order and block index is distinguishable from a fee relationship.
+Because the rotations repeat across bursts, a stable relationship between actual send order and
+block index is distinguishable from a fee relationship.
 
 ### Noise versus rule
 
@@ -152,22 +158,24 @@ Small samples are expected. A single burst is not treated as evidence. The repor
 
 The **pre-registered primary test** is the pooled mean `tau_fee` per client label on the
 **same-payer** arm, using only target-window rows with the planned leader and only
-**descending + shuffled** bursts.
-Holm correction is applied across the per-label primary p-values. Ascending bursts are excluded from
-the primary test because there fee order equals send order (confounded); they are a consistency
-check only. Everything else (multi-payer arm, ascending mode, per-burst, whole-block, landing rates)
-is exploratory and is marked that way in `results.md`.
+**ascending + shuffled** bursts.
+Holm correction is applied across the per-label primary p-values, separately for H1 (fee) and H2
+(send order). Descending bursts are excluded from the primary test because there fee order equals
+send order (confounded); they are a consistency check only. Everything else (multi-payer arm,
+descending mode, per-burst, whole-block, landing rates) is exploratory and is marked that way in
+`results.md`.
 
 The explicit verdict rule per label is:
 
 - **H1 (fee rule):** pooled mean `tau_fee > 0` with Holm-adjusted `p < 0.05` on the same-payer
-  descending+shuffled primary set, and `tau_fee > 0` on descending bursts alone.
-- **H2 (arrival rule):** pooled mean `tau_send > 0` with `p < 0.05` on the same primary set, and
-  `tau_send > 0` on descending bursts alone.
+  ascending+shuffled primary set, and `tau_fee > 0` on ascending bursts alone.
+- **H2 (arrival rule):** pooled mean `tau_send > 0` with Holm-adjusted `p < 0.05` on the same
+  primary set, and `tau_send > 0` on ascending bursts alone.
 - **Mixed:** both the H1 and H2 markers hold.
 - **H0:** otherwise, reported as "no rule detected (H0 not rejected)".
+- **Insufficient data:** no primary groups.
 
-Ascending bursts cannot support H1/H2 on their own because fee order and send order coincide there.
+Descending bursts cannot support H1/H2 on their own because fee order and send order coincide there.
 They are reported as a consistency check.
 
 Only bursts where at least three of our five transactions co-landed in the target block enter the
@@ -412,16 +420,17 @@ python -m obp run [--live] [--mainnet] [--cap-sol SOL] [--fee-levels LIST]
 | `--cu-limit` | `OBP_CU_LIMIT` or `21000` | Compute-unit limit for every probe transaction. |
 | `--lead-slots` | `2` | Send this many slots before the target window starts. The blockhash and signatures are prepared six slots earlier still. The pilot compares 1 vs 2; 3 landed early on localnet. |
 | `--send-mode` | `seq` | Send the burst sequentially or with one thread per transaction. |
-| `--gap-ms` | `20` | Sleep between sends in sequential mode. |
+| `--gap-ms` | `20` | Sleep between sends in sequential mode. Must be >= 0. |
 | `--payer-arm` | `same` | `same` (one fee payer, lock conflict), `multi` (parallel payers), or `alternate` (same/multi by burst index). |
 | `--max-bursts` | `0` | Limit to the earliest N planned bursts. `0` means all. |
 
 Reads `plan.json`, appends to `sent.csv`, writes `run_meta.json`, and reserves the per-transaction
 worst-case fee in the global per-cluster spend ledger immediately before each send. A burst whose
-final wait is already at/after the window start is skipped without reserving. Rows, including every
-signature, are written to `sent.csv` before any post-send RPC (the `slot_after_send` lookup); if
-that lookup fails, `slot_after_send` stays blank rather than losing the send. Dry-run rows are
-written with `live=False`.
+final wait is already at/after the window start is skipped without reserving. Each row, including
+its signature, is flushed and fsynced to `sent.csv` immediately after its own send and before any
+post-send RPC (the `slot_after_send` lookup); if that lookup fails, `slot_after_send` stays blank
+rather than losing the send. A returned signature that does not match the transaction is recorded
+as `error:signature-mismatch`. Dry-run rows are written with `live=False`.
 
 `--payer-arm alternate` is recommended for the main run: it interleaves same-payer and multi-payer
 bursts within one run (`same` for even burst indices, `multi` for odd), so time-of-day cannot
@@ -465,7 +474,8 @@ Reads `sent.csv`, `landed.csv`, `blocks.csv` and `windows.csv`, then writes `res
 `results_by_group.csv` and `results.md`. No flags. It is fully offline when those CSVs already
 exist. Primary stats use only target-window rows with the planned leader; `results.md` also has the
 all-landed sensitivity table, the H1/H2/H0 verdict table, grouped results by payer arm and order
-mode, Holm-corrected primary p-values, and planned-versus-verified window counts.
+mode, Holm-corrected primary p-values for fee and send order, and planned-versus-verified window
+counts.
 
 ## Safety and spend control
 
@@ -476,10 +486,12 @@ mode, Holm-corrected primary p-values, and planned-versus-verified window counts
 - The spend ledger is persistent, split by cluster (`spend_ledger_mainnet.json`,
   `spend_ledger_localnet.json`, and so on) and **global across sessions**. It lives in
   `$OBP_LEDGER_DIR` (default: the `data` root; `/data` in Docker), not in the per-session
-  directory. Read-modify-write is guarded by an OS `fcntl.flock` on a `.lock` file and re-reads the
-  file inside the lock, so concurrent sessions cannot jointly exceed the cap. Reservations are
-  never released, including for transactions that do not land. `run` and live `fund` write
-  `spend_ledger_snapshot.json` into the session for the commit.
+  directory. `$OBP_LEDGER_DIR` is expanded and resolved with `realpath`, so a relative or `~`
+  value is recorded as an absolute path. Read-modify-write is guarded by an OS `fcntl.flock` on a
+  `.lock` file and re-reads the file inside the lock, so concurrent sessions cannot jointly exceed
+  the cap. Reservations are never released, including for transactions that do not land. `run` and
+  live `fund` write `spend_ledger_snapshot.json` into the session for the commit; its
+  `source_ledger` field is the resolved global ledger path.
 - Because the ledger is global, `--cap-sol` is a running total across every session for that
   cluster, not a fresh allowance for each run. Reservations from earlier sessions still count.
 - The absolute ceiling is 0.05 SOL (50,000,000 lamports). No CLI flag or environment variable can
@@ -576,12 +588,15 @@ The live ledger itself is global, not per-session; each session commits only
 | `payer` | Fee-payer public key. |
 | `signature` | Transaction signature. |
 | `memo` | Short memo tag. Full metadata is keyed by signature in this file. |
-| `send_ts_ns` | Send timestamp per transaction, in nanoseconds since the Unix epoch. |
+| `send_ts_ns` | Timestamp immediately before the HTTP send, in nanoseconds since the Unix epoch. |
+| `send_done_ns` | Timestamp immediately after the HTTP send returns. |
 | `slot_at_send` | Burst-level processed slot when the final wait returned. |
 | `est_slot_at_send` | Per-tx estimate: `slot_at_send + floor((send_ts_ns - wait_return_ns) / 0.212)`. |
 | `slot_after_send` | Processed slot immediately after the burst was sent. |
 | `send_offset` | `est_slot_at_send - window_start`. Negative means before the window. |
-| `in_window_at_send` | True when `est_slot_at_send < window_start + 4`. |
+| `in_window_at_send` | True when the send was not after the window: `est_slot_at_send < window_start + 4`. |
+| `send_phase` | `early` when `est_slot_at_send < window_start`, `inside` when `window_start <= est_slot_at_send < window_start + 4`, otherwise `late`. |
+| `burst_late` | True when `slot_after_send >= window_start + 4`, blank if the post-send slot lookup failed. |
 | `on_time` | True when `est_slot_at_send < window_start`. |
 | `live` | `True` for a real send, `False` for dry run. |
 | `send_result` | Send acknowledgement: `ok`, `dry-run`, `not-sent:...`, or an error string. |
@@ -671,8 +686,9 @@ same columns grouped by `payer_arm` and `order_mode` per label, with burst and t
 ### results.md
 
 Human-readable report generated by `analyze`. It contains the primary-versus-exploratory note,
-the H1/H2/H0 verdict table per label (same-payer descending+shuffled primary, with raw and
-Holm-corrected p-values), per-burst and pooled tau tables, grouped payer-arm/order-mode results,
+the H1/H2/H0 verdict table per label (same-payer ascending+shuffled primary, with raw and
+Holm-corrected p-values for both fee and send order), per-burst and pooled tau tables, grouped
+payer-arm/order-mode results,
 the all-landed sensitivity table, landing and timing rates (live-only denominators plus separate
 dry-run columns) by label and fee level, the landed-per-burst distribution in the target window
 (the selection diagnostic), verified-versus-planned window counts, and the whole-block approximate

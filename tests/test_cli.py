@@ -25,6 +25,12 @@ def test_numeric_cli_validators():
         with pytest.raises(argparse.ArgumentTypeError):
             cli._cu_limit(bad)
 
+    assert cli._non_negative_int("0") == 0
+    assert cli._non_negative_int("20") == 20
+    for bad in ("-1", "x"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            cli._non_negative_int(bad)
+
 
 def test_cmd_fund_rejects_non_string_send_result(tmp_path, monkeypatch):
     main, extra = Keypair(), Keypair()

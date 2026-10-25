@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -66,6 +67,20 @@ def test_ledger_dir_env_override(tmp_path, monkeypatch):
     monkeypatch.setenv("OBP_LEDGER_DIR", str(tmp_path / "global"))
     assert ledger_path(str(tmp_path / "session"), "mainnet") == str(
         tmp_path / "global" / "spend_ledger_mainnet.json")
+
+
+def test_ledger_dir_env_override_is_normalised(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OBP_LEDGER_DIR", "./global/../global")
+    expected = os.path.realpath(tmp_path / "global")
+    assert ledger_path(str(tmp_path / "session"), "mainnet") == os.path.join(
+        expected, "spend_ledger_mainnet.json")
+    led = SpendLedger(ledger_path(str(tmp_path / "session"), "mainnet"), 1_000)
+    led.reserve(100)
+    snap = tmp_path / "snapshot.json"
+    led.snapshot(str(snap))
+    assert json.load(open(snap))["source_ledger"] == os.path.join(expected,
+                                                                  "spend_ledger_mainnet.json")
 
 
 def test_two_ledgers_on_same_file_cannot_jointly_exceed_cap(tmp_path):

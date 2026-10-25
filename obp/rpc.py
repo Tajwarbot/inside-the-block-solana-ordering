@@ -57,10 +57,12 @@ class _Retryable(RpcError):
     pass
 
 
-def expect_signature(result) -> str:
+def expect_signature(result, expected: str | None = None) -> str:
     """A sendTransaction result must be a signature string; anything else is a failure."""
     if not isinstance(result, str):
         raise RpcError(f"sendTransaction returned a non-string result: {result!r}")
+    if expected is not None and result != expected:
+        raise RpcError(f"signature-mismatch: expected {expected}, got {result!r}")
     return result
 
 

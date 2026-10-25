@@ -34,6 +34,16 @@ def _positive_int(text):
     return value
 
 
+def _non_negative_int(text):
+    try:
+        value = int(text)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"not an integer: {text!r}")
+    if value < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return value
+
+
 def _fee_levels(text):
     try:
         values = [int(x) for x in str(text).split(",")]
@@ -141,7 +151,7 @@ def cmd_fund(a, rpc, send_rpc):
         try:
             sig = send_rpc.call("sendTransaction", [base64.b64encode(bytes(tx)).decode(),
                                {"encoding": "base64", "skipPreflight": True, "maxRetries": 0}])
-            expect_signature(sig)
+            expect_signature(sig, str(tx.signatures[0]))
             print(f"sent {a.lamports} lamports -> {kp.pubkey()} sig={sig}")
         except Exception as e:  # noqa: BLE001
             failed.append(kp.pubkey())
@@ -179,7 +189,7 @@ def main():
                     help="compute-unit limit, 1..1,400,000")
     rn.add_argument("--lead-slots", type=int, default=2, help="send this many slots before the window. Too early lands in the previous leader block, so tune 1 vs 2 in the pilot")
     rn.add_argument("--send-mode", choices=["seq", "parallel"], default="seq")
-    rn.add_argument("--gap-ms", type=int, default=20)
+    rn.add_argument("--gap-ms", type=_non_negative_int, default=20)
     rn.add_argument("--payer-arm", choices=["same", "multi", "alternate"], default="same",
                     help="same payer, multiple payers, or alternate same/multi by burst index")
     rn.add_argument("--max-bursts", type=int, default=0)

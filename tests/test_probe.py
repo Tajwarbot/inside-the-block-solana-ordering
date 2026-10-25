@@ -1,3 +1,4 @@
+import base64
 import csv
 import logging
 
@@ -43,6 +44,9 @@ def test_send_offset_in_window_and_slot_after_send_columns(tmp_path):
         assert row["slot_after_send"] == "100"
         assert row["send_offset"] == "-2"
         assert row["in_window_at_send"] == "True"
+        assert row["send_phase"] == "early"
+        assert row["burst_late"] == "False"
+        assert int(row["send_done_ns"]) >= int(row["send_ts_ns"])
         assert row["on_time"] == "True"
 
 
@@ -80,6 +84,11 @@ class LiveRpc(ScriptedRpc):
         return 10**12
 
     def call(self, method, params=None, retries=None):
+        if method == "sendTransaction":
+            from solders.transaction import VersionedTransaction
+
+            tx = VersionedTransaction.from_bytes(base64.b64decode(params[0]))
+            return str(tx.signatures[0])
         return "fake-signature"
 
 
@@ -104,6 +113,7 @@ def test_per_tx_estimated_slot_drives_offset_and_on_time(tmp_path, monkeypatch):
     assert [r["est_slot_at_send"] for r in rows] == ["98", "101"]
     assert [r["send_offset"] for r in rows] == ["-2", "1"]
     assert [r["on_time"] for r in rows] == ["True", "False"]
+    assert [r["send_phase"] for r in rows] == ["early", "inside"]
     assert [r["send_rank"] for r in rows] == ["0", "1"]
 
 
@@ -235,3 +245,53 @@ def test_calibrate_default_memo_length_matches_a_real_tag(monkeypatch):
     memo_lengths = [len(bytes(ix.data)) for ix in tx.message.instructions
                     if str(tx.message.account_keys[ix.program_id_index]) == str(MEMO_PROGRAM)]
     assert memo_lengths == [expected]
+
+
+def test_gap_ms_must_be_non_negative(tmp_path):
+    ledger = SpendLedger(str(tmp_path / "ledger.json"), 10_000_000)
+    with pytest.raises(ValueError):
+        run_bursts(ScriptedRpc([50]), ScriptedRpc([50]), _plan(100), str(tmp_path / "sent.csv"),
+                   ledger, live=False, keypairs=[], run_id="t", fee_levels=[0, 1000],
+                   cu_limit=21_000, gap_ms=-1)
+
+
+def test_signatures_are_saved_when_a_later_step_raises(tmp_path, monkeypatch):
+    calls = []
+
+    def boom(seconds):
+        calls.append(seconds)
+        if len(calls) == 2:
+            raise RuntimeError("boom after second send")
+
+    monkeypatch.setattr("obp.probe.time.sleep", boom)
+    rpc = LiveRpc([90, 92, 98])
+    with pytest.raises(RuntimeError, match="boom after second send"):
+        run_bursts(rpc, rpc, _plan(100), str(tmp_path / "sent.csv"), DummyLedger(), live=True,
+                   keypairs=[Keypair()], run_id="t", fee_levels=[0, 1000], cu_limit=21_000,
+                   lead_slots=2, gap_ms=0)
+    rows = list(csv.DictReader(open(tmp_path / "sent.csv", newline="")))
+    assert len(rows) == 2
+    assert all(r["signature"] for r in rows)
+
+
+class WrongSignatureRpc(LiveRpc):
+    def call(self, method, params=None, retries=None):
+        if method == "sendTransaction":
+            return "not-the-expected-signature"
+        return super().call(method, params, retries)
+
+
+def test_probe_rejects_signature_mismatch(tmp_path):
+    rpc = WrongSignatureRpc([90, 92, 98, 100])
+    run_bursts(rpc, rpc, _plan(100), str(tmp_path / "sent.csv"), DummyLedger(), live=True,
+               keypairs=[Keypair()], run_id="t", fee_levels=[0, 1000], cu_limit=21_000,
+               lead_slots=2, gap_ms=0)
+    rows = list(csv.DictReader(open(tmp_path / "sent.csv", newline="")))
+    assert len(rows) == 2
+    assert all(r["send_result"].startswith("error:signature-mismatch") for r in rows)
+
+
+def test_burst_is_marked_late_after_the_window(tmp_path):
+    rows = _run(tmp_path, _plan(100), [90, 92, 98, 104])
+    assert [r["burst_late"] for r in rows] == ["True", "True"]
+    assert [r["send_phase"] for r in rows] == ["early", "early"]

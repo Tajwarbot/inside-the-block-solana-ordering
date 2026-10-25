@@ -69,7 +69,9 @@ Sending setup:
 
 Each burst contains five memo transactions with the same instructions and the same CU limit, and
 five different priority fees. The five fee levels are sent in ascending, descending or shuffled
-order, rotating by burst. In the same-payer arm all five use one fee payer, forcing a write-lock
+order, rotating by burst. Descending sends the highest fee first, so fee order and send order are
+aligned there (the confounded rotation); ascending sends it last, so the two are opposed (the
+discriminating rotation). In the same-payer arm all five use one fee payer, forcing a write-lock
 serialisation. In the multi-payer arm they use different payers, removing the lock conflict.
 
 The planner selects future four-slot leader windows for validators from several client labels.
@@ -79,10 +81,13 @@ The sender prebuilds and signs the burst six slots before the send, waits until
 burst is skipped before any fee is reserved. In `alternate` mode same-payer and multi-payer bursts
 alternate by burst index within one run, so time of day does not confound the arms. `verify-windows`
 confirms the target actually led the window. `collect` records the landing slot, actual leader,
-ledger index and every transaction in the landing block. Every row, including its signature, is
-written to `sent.csv` before any post-send RPC. The missing-slot sentinel is restricted to read
-methods; a `sendTransaction` result must be a signature string, otherwise it is recorded as an
-error.
+ledger index and every transaction in the landing block. Each row, including its signature, is
+flushed and fsynced to `sent.csv` immediately after its own send, before any post-send RPC.
+`send_ts_ns` is taken immediately before the HTTP send and `send_done_ns` immediately after it;
+`send_phase` is `early`, `inside` or `late`, and `burst_late` marks a post-send slot at or after
+`window_start + 4`. The missing-slot sentinel is restricted to read methods; a `sendTransaction`
+result must be a signature string and must equal the transaction's own signature, otherwise it is
+recorded as `error:signature-mismatch`.
 
 The primary statistic is Kendall tau of ledger index against fee, and against actual send order,
 within target-block groups that contain at least three of our five transactions. Primary tests keep
@@ -96,13 +101,15 @@ the ordering sample toward higher fees. That is a selection effect, not a findin
 reports the landed-per-burst distribution so the reader can judge it.
 
 The pre-registered primary test is the pooled mean `tau_fee` per client label on the same-payer
-arm, using only descending + shuffled bursts and only target-window rows with the planned leader.
-Holm correction is applied across the per-label primary p-values. Ascending bursts are excluded from
-the primary test because there fee order equals send order (confounded); they are a consistency
-check only. All other cuts are exploratory. The per-label verdict rule is: H1 if pooled mean
-`tau_fee > 0` with Holm-adjusted `p < 0.05` and `tau_fee > 0` on descending bursts alone; H2 if
-pooled mean `tau_send > 0` with `p < 0.05` and `tau_send > 0` on descending bursts alone; mixed if
-both H1 and H2 markers hold; otherwise "no rule detected (H0 not rejected)".
+arm, using only ascending + shuffled bursts and only target-window rows with the planned leader.
+Holm correction is applied across the per-label primary p-values, separately for H1 (fee) and H2
+(send order). Descending bursts are excluded from the primary test because there fee order equals
+send order (confounded); they are a consistency check only. All other cuts are exploratory. The
+per-label verdict rule is: H1 if pooled mean `tau_fee > 0` with Holm-adjusted `p < 0.05` and
+`tau_fee > 0` on ascending bursts alone; H2 if pooled mean `tau_send > 0` with Holm-adjusted
+`p < 0.05` and `tau_send > 0` on ascending bursts alone; mixed if both H1 and H2 markers hold;
+"no rule detected (H0 not rejected)" if neither holds; "insufficient data" if there are no primary
+groups.
 
 ## Results
 
@@ -124,7 +131,7 @@ verified windows to support a per-label result, and whether any target lost its 
 
 ### Path from backend to the executing node
 
-| Label | Live sends | Landed | Landing rate | On time | In window at send |
+| Label | Live sends | Landed | Landing rate | On time | Not after window end |
 |---|---:|---:|---:|---:|---:|
 | [FILL: label PENDING] | [RESULT PENDING: live run] | [RESULT PENDING: live run] | [RESULT PENDING: live run] | [RESULT PENDING: live run] | [RESULT PENDING: live run] |
 | [FILL: label PENDING] | [RESULT PENDING: live run] | [RESULT PENDING: live run] | [RESULT PENDING: live run] | [RESULT PENDING: live run] | [RESULT PENDING: live run] |
@@ -172,14 +179,15 @@ Per-burst rotation results:
 | Descending | [RESULT PENDING: live run] | [RESULT PENDING: live run] | [RESULT PENDING: live run] | [RESULT PENDING: live run] | [RESULT PENDING: live run] |
 | Shuffled | [RESULT PENDING: live run] | [RESULT PENDING: live run] | [RESULT PENDING: live run] | [RESULT PENDING: live run] | [RESULT PENDING: live run] |
 
-Interpretation: [RESULT PENDING: live run].
+Interpretation: [RESULT PENDING: live run]. Ascending is the discriminating rotation because fee
+order and send order are opposed there; descending is a consistency check because they are aligned.
 
 ### Noise versus rule
 
 | Hypothesis | Expected pattern | Observed support | Verdict |
 |---|---|---|---|
-| H1: fee rule | Same-payer descending+shuffled: pooled mean tau_fee > 0 and Holm p < 0.05, and tau_fee > 0 on descending bursts alone; ascending is consistency only | [RESULT PENDING: live run] | [RESULT PENDING: live run] |
-| H2: arrival rule | Same primary set: pooled mean tau_send > 0 with p < 0.05 and tau_send > 0 on descending bursts alone, without the H1 conditions | [RESULT PENDING: live run] | [RESULT PENDING: live run] |
+| H1: fee rule | Same-payer ascending+shuffled: pooled mean tau_fee > 0 and Holm p < 0.05, and tau_fee > 0 on ascending bursts alone; descending is consistency only | [RESULT PENDING: live run] | [RESULT PENDING: live run] |
+| H2: arrival rule | Same primary set: pooled mean tau_send > 0 with Holm p < 0.05 and tau_send > 0 on ascending bursts alone, without the H1 conditions | [RESULT PENDING: live run] | [RESULT PENDING: live run] |
 | Mixed | Both H1 and H2 markers hold | [RESULT PENDING: live run] | [RESULT PENDING: live run] |
 | H0: noise | Signs and magnitudes vary; pooled p not small; landing too thin | [RESULT PENDING: live run] | [RESULT PENDING: live run] |
 
@@ -194,19 +202,21 @@ send appears earlier. Values range from
 -1 to +1. Zero means no monotonic relation.
 
 - H1 (fee rule): pooled mean `tau_fee` is positive with Holm-adjusted `p < 0.05` on the same-payer
-  descending+shuffled primary set, and `tau_fee` is positive on descending bursts alone.
-  `tau_send` may be positive in the ascending rotation by construction, but ascending bursts cannot
-  support H1/H2 because fee order equals send order there.
-- H2 (arrival rule): pooled mean `tau_send` is positive with `p < 0.05` on the same primary set,
-  and `tau_send` is positive on descending bursts alone, while the H1 conditions do not hold.
+  ascending+shuffled primary set, and `tau_fee` is positive on ascending bursts alone.
+  `tau_send` may be positive in the descending rotation by construction, but descending bursts
+  cannot support H1/H2 because fee order equals send order there.
+- H2 (arrival rule): pooled mean `tau_send` is positive with Holm-adjusted `p < 0.05` on the same
+  primary set, and `tau_send` is positive on ascending bursts alone, while the H1 conditions do not
+  hold.
 - Mixed: both the H1 and H2 markers hold.
 - H0 (noise): signs and magnitudes vary without a stable pattern, pooled p-values are not small,
   or the number of same-block groups is too small to decide.
+- Insufficient data: there are no primary groups.
 
 The pre-registered primary test is the pooled mean `tau_fee` per label on the same-payer arm using
-only descending + shuffled bursts; Holm correction is applied across the per-label primary
-p-values.
-Ascending bursts are reported as a consistency check only. Per-burst, per-mode, multi-payer and
+only ascending + shuffled bursts; Holm correction is applied across the per-label primary
+p-values, separately for fee and send order.
+Descending bursts are reported as a consistency check only. Per-burst, per-mode, multi-payer and
 whole-block results are exploratory and are labelled as such in `results.md`.
 
 Read per-burst p-values with care. Groups with fewer than three of our transactions in the same
@@ -229,7 +239,7 @@ is about **0.212 s**, so a four-slot leader window is about **0.85 s**.
    **436/436 slots produced blocks**. It covered **13 validators / 8 labels**.
 
 2. **Run b: lead 2 plus prebuilt transactions (15:33-15:47 UTC).** It produced 142 bursts:
-   **126/142 were on time** and **142/142 were still in the window at send**. Send offsets were
+   **126/142 were on time** and **142/142 were not after the window end**. Send offsets were
    **-2: 77, -1: 49, 0: 8, 1: 6, 2: 2**.
 
 3. **Run d: current code (16:15-16:37 UTC).** This run used lead 2, fine polling, the final guard

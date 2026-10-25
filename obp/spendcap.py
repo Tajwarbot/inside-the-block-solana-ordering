@@ -34,7 +34,7 @@ def ledger_dir(data_dir: str) -> str:
     """
     env = os.environ.get("OBP_LEDGER_DIR")
     if env:
-        return env
+        return os.path.realpath(os.path.expanduser(env))
     d = os.path.abspath(data_dir)
     if os.path.basename(d) == "data":
         return d
@@ -102,7 +102,7 @@ class SpendLedger:
         os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
         with open(path, "w") as f:
             json.dump({"reserved_lamports": self.reserved, "cap_lamports": self.cap,
-                       "source_ledger": os.path.abspath(self.path)}, f, indent=1)
+                       "source_ledger": os.path.realpath(self.path)}, f, indent=1)
 
     @property
     def remaining(self):
