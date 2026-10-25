@@ -74,6 +74,8 @@ class SpendLedger:
         os.replace(tmp, self.path)
 
     def reserve(self, lamports: int, note: str = ""):
+        if not isinstance(lamports, int) or isinstance(lamports, bool) or lamports <= 0:
+            raise ValueError(f"reservation must be a positive integer number of lamports; got {lamports!r}")
         with self._lock:
             with open(self.lock_path, "a+") as lock:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX)

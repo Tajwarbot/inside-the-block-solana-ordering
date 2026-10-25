@@ -24,8 +24,12 @@ def upcoming_windows(rpc: Rpc, cache_path: str | None = None, horizon_slots: int
             c = json.load(f)
         if c.get("epoch") == ei["epoch"] and c.get("cluster") == cluster:
             sched = c["schedule"]
+            if not isinstance(sched, dict) or "__error__" in sched:
+                raise SystemExit(f"cached leader schedule is unusable: {sched!r}")
     if sched is None:
         sched = rpc.leader_schedule()  # whole epoch, all leaders (~several MB)
+        if not isinstance(sched, dict) or "__error__" in sched:
+            raise SystemExit(f"getLeaderSchedule returned no usable schedule: {sched!r}")
         if cache_path:
             with open(cache_path, "w") as f:
                 json.dump({"cluster": cluster, "epoch": ei["epoch"], "schedule": sched}, f)

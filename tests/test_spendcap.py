@@ -37,8 +37,10 @@ def test_reservations_persist(tmp_path):
 def test_ledger_is_per_cluster(tmp_path):
     assert ledger_filename("mainnet") == "spend_ledger_mainnet.json"
     assert ledger_filename("localnet") == "spend_ledger_localnet.json"
-    mainnet = ledger_path(str(tmp_path), "mainnet")
-    localnet = ledger_path(str(tmp_path), "localnet")
+    session = tmp_path / "data" / "runs" / "s1"  # ledger_dir() goes to the shared data root
+    mainnet = ledger_path(str(session), "mainnet")
+    localnet = ledger_path(str(session), "localnet")
+    assert str(tmp_path) in mainnet
     assert mainnet != localnet
     SpendLedger(mainnet, 1_000).reserve(1_000)
     assert SpendLedger(localnet, 1_000).reserved == 0
@@ -86,3 +88,12 @@ def test_snapshot_copies_global_state_into_session(tmp_path):
     data = json.load(open(snap))
     assert data["reserved_lamports"] == 250
     assert data["source_ledger"] == path
+
+
+@pytest.mark.parametrize("lamports", [0, -1, -5_000])
+def test_reserve_rejects_non_positive_lamports(tmp_path, lamports):
+    led = SpendLedger(str(tmp_path / "ledger.json"), 1_000)
+    with pytest.raises(ValueError):
+        led.reserve(lamports)
+    assert led.reserved == 0
+    assert not (tmp_path / "ledger.json").exists()

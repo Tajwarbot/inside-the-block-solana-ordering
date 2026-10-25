@@ -1,0 +1,5 @@
+{
+ "reserved_lamports": 0,
+ "cap_lamports": 40000000,
+ "source_ledger": "/workspace/solana-order-bounty/code/data/spend_ledger_mainnet.json"
+}

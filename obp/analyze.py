@@ -4,9 +4,11 @@ Primary tests use only bursts where the landing slot was inside the planned wind
 leader was the planned target. A separate sensitivity table shows all landed rows regardless of
 leader/target. Only pairs of OUR transactions that landed in the SAME block are compared.
 
-The pre-registered primary test is pooled tau_fee per client label on the same-payer arm. Holm
-correction is applied to those per-label p-values. Everything else (multi-payer arm, per-burst,
-per-mode, whole-block) is exploratory.
+The pre-registered primary test is pooled tau_fee per client label on the same-payer arm, using
+only descending and shuffled bursts. Ascending bursts are excluded from the primary test because
+there fee order equals send order (confounded); they are a consistency check only. Holm correction
+is applied to those per-label p-values. Everything else (multi-payer arm, per-burst, per-mode,
+whole-block) is exploratory.
 
 Whole-block priority fee per CU is an APPROXIMATION:
     (fee - 5000 * num_sigs) * 1e6 / cu_consumed
@@ -195,28 +197,67 @@ def _pos_sig(g, value_key, p_key):
 
 
 def _verdicts(bursts):
+    # Primary test: same-payer arm only. Ascending bursts are confounded (fee order == send order),
+    # so the verdict uses descending + shuffled bursts; asc is shown as a consistency check.
     labels = sorted({b["label"] for b in bursts})
-    primary = {label: _summarize([b for b in bursts
-                                  if b["label"] == label and b["payer_arm"] == "same"]) for label in labels}
+    same = [b for b in bursts if b["payer_arm"] == "same"]
+    primary = {label: _summarize([b for b in same
+                                  if b["label"] == label and b["order_mode"] in ("desc", "shuffle")])
+               for label in labels}
     holm = _holm({label: primary[label]["p_fee"] for label in labels})
     out = []
     for label in labels:
-        lb = [b for b in bursts if b["label"] == label]
-        modes = {r["group"]: r for r in _group_stats(lb, "order_mode")}
-        asc_shuffle = [b for b in lb if b["order_mode"] in ("asc", "shuffle")]
-        asc_stats = _summarize(asc_shuffle) if asc_shuffle else None
-        desc = modes.get("desc")
-        h1 = _pos_sig(desc, "mean_tau_fee", "p_fee") and _pos_sig(asc_stats, "mean_tau_fee", "p_fee")
-        h2 = (not h1) and any(_pos_sig(g, "mean_tau_send", "p_send") for g in (desc, asc_stats) if g)
-        verdict = "H1 fee rule" if h1 else ("H2 arrival rule" if h2 else "no rule detected (H0 not rejected)")
+        desc_bursts = [b for b in same if b["label"] == label and b["order_mode"] == "desc"]
+        asc_bursts = [b for b in same if b["label"] == label and b["order_mode"] == "asc"]
+        desc = _summarize(desc_bursts) if desc_bursts else None
+        asc = _summarize(asc_bursts) if asc_bursts else None
+        p = primary[label]
+        h1 = (p["mean_tau_fee"] is not None and p["mean_tau_fee"] > 0
+              and holm.get(label) is not None and holm[label] < 0.05
+              and desc is not None and desc["mean_tau_fee"] is not None and desc["mean_tau_fee"] > 0)
+        h2 = (p["mean_tau_send"] is not None and p["mean_tau_send"] > 0
+              and p["p_send"] is not None and p["p_send"] < 0.05
+              and desc is not None and desc["mean_tau_send"] is not None and desc["mean_tau_send"] > 0)
+        if h1 and h2:
+            verdict = "mixed (both H1 and H2 markers)"
+        elif h1:
+            verdict = "H1 fee rule"
+        elif h2:
+            verdict = "H2 arrival rule"
+        else:
+            verdict = "no rule detected (H0 not rejected)"
         evidence = []
-        for name, g in (("desc", desc), ("asc/shuffle", asc_stats)):
+        for name, g in (("desc", desc), ("desc+shuffle (primary)", p), ("asc (consistency only)", asc)):
             if g:
                 evidence.append(f"{name}: tau_fee={_tau(g['mean_tau_fee'])} p={_fmt(g['p_fee'])} "
                                 f"tau_send={_tau(g['mean_tau_send'])} p={_fmt(g['p_send'])}")
-        out.append({"label": label, "bursts": primary[label]["bursts"], "txs": primary[label]["txs"],
-                    "tau_fee": primary[label]["mean_tau_fee"], "p_fee": primary[label]["p_fee"],
-                    "p_holm": holm.get(label), "verdict": verdict, "evidence": "; ".join(evidence)})
+        out.append({"label": label, "bursts": p["bursts"], "txs": p["txs"],
+                    "tau_fee": p["mean_tau_fee"], "p_fee": p["p_fee"], "p_holm": holm.get(label),
+                    "tau_send": p["mean_tau_send"], "p_send": p["p_send"],
+                    "verdict": verdict, "evidence": "; ".join(evidence)})
+    return out
+
+
+def _landing_distribution(sent_rows, landed_rows):
+    """For each live burst, count how many of its txs landed in the target window."""
+    landed = {r.get("signature"): r for r in landed_rows if _truth(r.get("landed"))}
+    by_burst = defaultdict(int)
+    labels = {}
+    for r in sent_rows:
+        if not _truth(r.get("live")):
+            continue
+        key = (r.get("run", ""), r.get("burst", ""))
+        labels[key] = r.get("label") or "(unknown)"
+        lr = landed.get(r.get("signature"))
+        if lr and _truth(lr.get("in_target_window")) and _truth(lr.get("leader_is_target")):
+            by_burst[key] += 1
+    by_label = defaultdict(list)
+    for key, label in labels.items():
+        by_label[label].append(by_burst.get(key, 0))
+    out = []
+    for label, counts in sorted(by_label.items()):
+        dist = [sum(1 for c in counts if c == n) for n in range(6)]
+        out.append({"label": label, "bursts": len(counts), "mean": _mean(counts), "dist": dist})
     return out
 
 
@@ -362,6 +403,7 @@ def analyze(landed_csv, out_csv, sent_csv=None, blocks_csv=None, md_path=None, w
 
     landed_sigs = {r.get("signature") for r in landed_rows if _truth(r.get("landed"))}
     landing_labels, landing_fees = _landing(sent_rows, landed_sigs)
+    landing_dist = _landing_distribution(sent_rows, landed_rows)
     window_labels = _window_summary(window_rows)
     pooled = _pooled(bursts)
     sensitivity = _pooled(all_bursts)
@@ -394,22 +436,28 @@ def analyze(landed_csv, out_csv, sent_csv=None, blocks_csv=None, md_path=None, w
         "## Test plan: primary vs exploratory",
         "",
         "**Pre-registered primary test:** pooled `tau_fee` per client label on the **same-payer** arm, "
-        "using only rows with `in_target_window=True` and `leader_is_target=True`. Holm correction is "
+        "using only **descending + shuffled** bursts and only rows with `in_target_window=True` and "
+        "`leader_is_target=True`. Ascending bursts are excluded from the primary test because there "
+        "fee order equals send order (confounded); asc is a consistency check only. Holm correction is "
         "applied across the per-label primary p-values below.",
         "",
-        "Everything else (multi-payer arm, per-burst, per-mode/rotation, whole-block, landing rates) is "
+        "Everything else (multi-payer arm, ascending mode, per-burst, whole-block, landing rates) is "
         "**exploratory**. Groups with fewer than 3 of our transactions in the same block are dropped. "
-        "With a five-transaction burst the smallest attainable two-sided per-burst permutation p is "
-        "1/60 ≈ 0.017; pooled tests use 2000 permutations, so their floor is 0.0005.",
+        "That selection can bias the ordering sample toward bursts whose higher-fee transactions land "
+        "more often (see the target-window landing distribution below). With a five-transaction burst "
+        "the smallest attainable two-sided per-burst permutation p is 1/60 ≈ 0.017; pooled tests use "
+        "2000 permutations, so their floor is 0.0005.",
         "",
         "## Verdict per label (H1 / H2 / H0)",
         "",
-        "H1 = pooled tau_fee > 0 with p < 0.05 in both the descending and ascending/shuffled groups. "
-        "H2 = tau_send > 0 with p < 0.05 while the fee pattern is not consistent across modes. "
-        "Otherwise the verdict is H0 (no rule detected).",
+        "All verdict inputs use the same-payer arm only. H1 = pooled tau_fee > 0 with Holm-adjusted "
+        "p < 0.05 on descending+shuffled bursts AND tau_fee > 0 in descending bursts alone. "
+        "H2 = pooled tau_send > 0 with p < 0.05 on descending+shuffled bursts AND tau_send > 0 in "
+        "descending bursts alone. If both hold the verdict is **mixed**; if neither holds it is "
+        "**no rule detected (H0 not rejected)**. Ascending bursts are a consistency check only.",
         "",
-        _md_table(["label", "primary bursts", "primary txs", "tau_fee (same arm)", "p_fee",
-                   "Holm p", "verdict", "mode evidence"],
+        _md_table(["label", "primary bursts (desc+shuffle, same arm)", "primary txs",
+                   "tau_fee (same arm)", "p_fee", "Holm p", "verdict", "mode evidence"],
                   [[r["label"], r["bursts"], r["txs"], _tau(r["tau_fee"]), _fmt(r["p_fee"]),
                     _fmt(r["p_holm"]), r["verdict"], r["evidence"]] for r in verdicts])
         if verdicts else "_No same-block groups with >=3 target-window txs._",
@@ -463,6 +511,19 @@ def analyze(landed_csv, out_csv, sent_csv=None, blocks_csv=None, md_path=None, w
         _md_table(["cu_price (micro/CU)", "live sent", "landed", "landing rate", "live on_time", "on_time rate"],
                   [[r["cu_price"], r["live_sent"], r["landed"], r["landing_rate"], r["live_on_time"],
                     r["on_time_rate"]] for r in landing_fees]) if landing_fees else "_No fee data._",
+        "",
+        "### Selected sample: our txs in the target window per burst",
+        "",
+        "The primary test only uses groups with **at least 3** of our transactions co-landed in the "
+        "target block. This table counts, for each live burst, how many of its transactions landed "
+        "anywhere in the target window (not necessarily in the same block). Bursts with 0-2 are "
+        "under-represented in the ordering tests. If higher-fee transactions also land more often, the "
+        "primary sample is biased toward higher fees; that selection effect is a limitation, not a "
+        "finding.",
+        "",
+        _md_table(["label", "live bursts", "0", "1", "2", "3", "4", "5", "mean landed in target window"],
+                  [[r["label"], r["bursts"], *r["dist"], _fmt(r["mean"], 2)] for r in landing_dist])
+        if landing_dist else "_No live bursts._",
         "",
         "## Verified leader windows",
         "",

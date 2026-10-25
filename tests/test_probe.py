@@ -127,3 +127,111 @@ def test_multi_live_records_unique_payer_count(tmp_path):
     assert len(rows) == 5
     assert {r["n_unique_payers"] for r in rows} == {"5"}
     assert len({r["payer"] for r in rows}) == 5
+
+
+class PostSendBoomRpc(LiveRpc):
+    def __init__(self, slots, fail_on):
+        super().__init__(slots)
+        self.calls = 0
+        self.fail_on = fail_on
+
+    def slot(self, commitment="processed"):
+        self.calls += 1
+        if self.calls == self.fail_on:
+            raise RuntimeError("post-send getSlot boom")
+        return super().slot(commitment)
+
+
+def test_rows_are_saved_before_a_failing_post_send_get_slot(tmp_path, caplog):
+    ledger = SpendLedger(str(tmp_path / "ledger.json"), 10_000_000)
+    rpc = PostSendBoomRpc([90, 97, 98, 100], fail_on=4)
+    run_bursts(rpc, rpc, _plan(100), str(tmp_path / "sent.csv"), ledger, live=True,
+               keypairs=[Keypair()], run_id="t", fee_levels=[0, 1000], cu_limit=21_000,
+               lead_slots=2, gap_ms=0)
+    rows = list(csv.DictReader(open(tmp_path / "sent.csv", newline="")))
+    assert len(rows) == 2
+    assert all(r["signature"] for r in rows)
+    assert all(r["send_result"] == "ok" for r in rows)
+    assert all(r["slot_after_send"] == "" for r in rows)
+    assert "post-send slot lookup failed" in caplog.text
+
+
+class BadSendRpc(LiveRpc):
+    def call(self, method, params=None, retries=None):
+        return {"__error__": {"code": -32007, "message": "Slot skipped"}}
+
+
+def test_probe_treats_non_string_send_result_as_error(tmp_path):
+    rpc = BadSendRpc([90, 97, 98])
+    run_bursts(rpc, rpc, _plan(100), str(tmp_path / "sent.csv"), DummyLedger(), live=True,
+               keypairs=[Keypair()], run_id="t", fee_levels=[0, 1000], cu_limit=21_000,
+               lead_slots=2, gap_ms=0)
+    rows = list(csv.DictReader(open(tmp_path / "sent.csv", newline="")))
+    assert len(rows) == 2
+    assert all(r["send_result"].startswith("error:") for r in rows)
+    assert all("non-string" in r["send_result"] for r in rows)
+
+
+def test_alternate_arm_alternates_by_burst_and_records_the_arm(tmp_path):
+    ledger = SpendLedger(str(tmp_path / "ledger.json"), 10_000_000)
+    payers = [Keypair() for _ in range(5)]
+    rpc = LiveRpc([90, 97, 98, 100, 117, 118, 119])
+    run_bursts(rpc, rpc, _plan(100, 120), str(tmp_path / "sent.csv"), ledger, live=True,
+               keypairs=payers, run_id="t", fee_levels=[0, 1_000, 10_000, 100_000, 1_000_000],
+               cu_limit=21_000, lead_slots=2, gap_ms=0, payer_arm="alternate")
+    rows = list(csv.DictReader(open(tmp_path / "sent.csv", newline="")))
+    assert len(rows) == 10
+    by_burst = {}
+    for r in rows:
+        by_burst.setdefault(r["burst"], []).append(r)
+    assert {r["payer_arm"] for r in by_burst["0"]} == {"same"}
+    assert {r["n_unique_payers"] for r in by_burst["0"]} == {"1"}
+    assert {r["payer_arm"] for r in by_burst["1"]} == {"multi"}
+    assert {r["n_unique_payers"] for r in by_burst["1"]} == {"5"}
+
+
+def test_alternate_live_requires_at_least_five_payers(tmp_path):
+    payers = [Keypair() for _ in range(4)]
+    with pytest.raises(SystemExit):
+        run_bursts(ScriptedRpc([50]), ScriptedRpc([50]), _plan(100), str(tmp_path / "sent.csv"),
+                   DummyLedger(), live=True, keypairs=payers, run_id="t",
+                   fee_levels=[0, 1, 2, 3, 4], cu_limit=21_000, lead_slots=2,
+                   send_mode="seq", gap_ms=0, payer_arm="alternate")
+
+
+def test_fee_level_and_cu_limit_validation():
+    from obp.probe import validate_cu_limit, validate_fee_levels
+
+    assert validate_fee_levels([0, 1]) == [0, 1]
+    for bad in ([], [-1], [0, -2], [0, 1.5], [0, True]):
+        with pytest.raises(ValueError):
+            validate_fee_levels(bad)
+    assert validate_cu_limit(1) == 1
+    assert validate_cu_limit(1_400_000) == 1_400_000
+    for bad in (0, -1, 1_400_001, True):
+        with pytest.raises(ValueError):
+            validate_cu_limit(bad)
+
+
+def test_calibrate_default_memo_length_matches_a_real_tag(monkeypatch):
+    import base64
+
+    from solders.transaction import VersionedTransaction
+
+    from obp.probe import calibrate_cu
+    from obp.txbuild import MEMO_PROGRAM, memo_tag
+
+    captured = {}
+
+    class CalRpc:
+        def call(self, method, params=None, retries=None):
+            captured["tx"] = base64.b64decode(params[0])
+            return {"value": {"err": None, "unitsConsumed": 18_000}}
+
+    expected = len(memo_tag(0, 0, 0, 0, "asc"))
+    assert expected != 40
+    assert calibrate_cu(CalRpc(), str(Keypair().pubkey())) == 18_000
+    tx = VersionedTransaction.from_bytes(captured["tx"])
+    memo_lengths = [len(bytes(ix.data)) for ix in tx.message.instructions
+                    if str(tx.message.account_keys[ix.program_id_index]) == str(MEMO_PROGRAM)]
+    assert memo_lengths == [expected]

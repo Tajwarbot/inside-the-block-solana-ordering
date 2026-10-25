@@ -82,3 +82,29 @@ def test_unknown_remote_cluster_refuses_live():
 def test_real_mainnet_genesis_hash_is_mainnet():
     # value returned by api.mainnet-beta.solana.com getGenesisHash
     assert cluster_name("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d", "https://x") == "mainnet"
+
+
+@pytest.mark.parametrize("method", ["getBlock", "getBlockTime", "getBlocks", "getSlotLeaders"])
+def test_missing_slot_sentinel_only_for_read_methods(monkeypatch, method):
+    rpc = Rpc("http://example.invalid", max_retries=1)
+    payload = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32007, "message": "Slot skipped"}}
+    monkeypatch.setattr(rpc.s, "post", lambda *a, **k: FakeResponse(payload))
+    assert rpc.call(method)["__error__"]["code"] == -32007
+
+
+@pytest.mark.parametrize("method", ["sendTransaction", "getSlot", "getSignatureStatuses"])
+def test_missing_slot_code_is_an_error_for_other_methods(monkeypatch, method):
+    rpc = Rpc("http://example.invalid", max_retries=1)
+    payload = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32007, "message": "Slot skipped"}}
+    monkeypatch.setattr(rpc.s, "post", lambda *a, **k: FakeResponse(payload))
+    with pytest.raises(RpcError):
+        rpc.call(method)
+
+
+def test_expect_signature_rejects_sentinel_and_none():
+    from obp.rpc import expect_signature
+
+    assert expect_signature("sig") == "sig"
+    for bad in ({"__error__": {"code": -32007}}, None, 123, ["sig"]):
+        with pytest.raises(RpcError):
+            expect_signature(bad)

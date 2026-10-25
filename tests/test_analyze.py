@@ -96,6 +96,8 @@ def test_analyze_with_landed_and_block_rows(tmp_path):
     assert rows[0]["tau_fee"] not in ("", None)
     assert "Pooled per client label" in text
     assert "Whole-block priority ordering" in text
+    assert "Selected sample: our txs in the target window per burst" in text
+    assert "| C | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 5 |" in text
 
 
 def test_results_header_counts_only_landed_true_rows(tmp_path):
@@ -203,3 +205,45 @@ def test_send_rank_is_used_instead_of_planned_send_seq(tmp_path):
     _res, bursts = _per_burst(rows)
     assert bursts[0]["seq"] == [0, 1, 2, 3, 4]
     assert bursts[0]["ts"] == 1.0
+
+
+def _synthetic_burst(label="C", arm="same", mode="desc", fee_dir=1, seq_dir=1, burst=0):
+    from obp.analyze import kendall
+
+    idx = list(range(5))
+    fee = [-(5 - i) for i in idx] if fee_dir > 0 else [-(i + 1) for i in idx]
+    seq = idx if seq_dir > 0 else [4 - i for i in idx]
+    return {"label": label, "payer_arm": arm, "order_mode": mode, "n": 5,
+            "idx": idx, "fee": fee, "seq": seq,
+            "tf": kendall(idx, fee), "ts": kendall(idx, seq)}
+
+
+def _verdict_for(bursts):
+    from obp.analyze import _verdicts
+
+    return _verdicts(bursts)[0]["verdict"]
+
+
+def test_verdict_uses_only_same_arm_desc_and_shuffle():
+    bursts = [_synthetic_burst(mode="desc", seq_dir=-1),
+              _synthetic_burst(mode="shuffle", seq_dir=-1, burst=1)]
+    # Multi-payer rows would look like H2 if they leaked into the verdict.
+    bursts.append(_synthetic_burst(arm="multi", mode="desc", fee_dir=-1, seq_dir=1, burst=2))
+    assert _verdict_for(bursts) == "H1 fee rule"
+
+
+def test_verdict_h2_needs_desc_and_shuffle_send_order():
+    bursts = [_synthetic_burst(mode="desc", fee_dir=-1, seq_dir=1),
+              _synthetic_burst(mode="shuffle", fee_dir=-1, seq_dir=1, burst=1)]
+    assert _verdict_for(bursts) == "H2 arrival rule"
+
+
+def test_verdict_mixed_and_no_rule_and_asc_is_not_primary():
+    both = [_synthetic_burst(mode="desc", fee_dir=1, seq_dir=1),
+            _synthetic_burst(mode="shuffle", fee_dir=1, seq_dir=1, burst=1)]
+    assert _verdict_for(both).startswith("mixed")
+    neither = [_synthetic_burst(mode="desc", fee_dir=-1, seq_dir=-1),
+               _synthetic_burst(mode="shuffle", fee_dir=-1, seq_dir=-1, burst=1)]
+    assert _verdict_for(neither) == "no rule detected (H0 not rejected)"
+    asc_only = [_synthetic_burst(mode="asc", fee_dir=1, seq_dir=1)]
+    assert _verdict_for(asc_only) == "no rule detected (H0 not rejected)"

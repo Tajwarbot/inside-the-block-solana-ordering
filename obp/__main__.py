@@ -12,7 +12,7 @@
 """
 import argparse, base64, csv, json, logging, os, subprocess, sys, time
 import solders
-from .rpc import Rpc, guard_live_cluster
+from .rpc import Rpc, expect_signature, guard_live_cluster
 from . import __version__, inventory, schedule, probe, collect, analyze, windows
 from .spendcap import SpendLedger, LAMPORTS_PER_SOL, ledger_path, worst_case_fee
 from .txbuild import build_transfer_tx
@@ -22,6 +22,32 @@ DATA = os.environ.get("OBP_DATA", "data")
 
 def p(*a):
     return os.path.join(DATA, *a)
+
+
+def _positive_int(text):
+    try:
+        value = int(text)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"not an integer: {text!r}")
+    if value <= 0:
+        raise argparse.ArgumentTypeError("must be > 0")
+    return value
+
+
+def _fee_levels(text):
+    try:
+        values = [int(x) for x in str(text).split(",")]
+        return probe.validate_fee_levels(values)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e))
+
+
+def _cu_limit(text):
+    try:
+        value = int(text)
+        return probe.validate_cu_limit(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e))
 
 
 def _git_commit():
@@ -84,6 +110,8 @@ def cmd_balances(rpc):
 
 
 def cmd_fund(a, rpc, send_rpc):
+    if a.lamports <= 0:
+        raise SystemExit("--lamports must be > 0")
     env = os.environ.get("OBP_KEYPAIRS")
     kps = _load_keys(env, "multi")
     if len(kps) < 2:
@@ -111,9 +139,10 @@ def cmd_fund(a, rpc, send_rpc):
     for kp in extras:
         tx = build_transfer_tx(main, kp.pubkey(), a.lamports, bh)
         try:
-            send_rpc.call("sendTransaction", [base64.b64encode(bytes(tx)).decode(),
-                          {"encoding": "base64", "skipPreflight": True, "maxRetries": 0}])
-            print(f"sent {a.lamports} lamports -> {kp.pubkey()} sig={tx.signatures[0]}")
+            sig = send_rpc.call("sendTransaction", [base64.b64encode(bytes(tx)).decode(),
+                               {"encoding": "base64", "skipPreflight": True, "maxRetries": 0}])
+            expect_signature(sig)
+            print(f"sent {a.lamports} lamports -> {kp.pubkey()} sig={sig}")
         except Exception as e:  # noqa: BLE001
             failed.append(kp.pubkey())
             print(f"FAILED -> {kp.pubkey()}: {e}")
@@ -144,15 +173,18 @@ def main():
     rn.add_argument("--live", action="store_true", help="REALLY send. Without it nothing is sent.")
     rn.add_argument("--mainnet", action="store_true", help="extra explicit opt-in required for --live on mainnet")
     rn.add_argument("--cap-sol", type=float, default=0.04)
-    rn.add_argument("--fee-levels", default="0,1000,10000,100000,1000000", help="micro-lamports per CU")
-    rn.add_argument("--cu-limit", type=int, default=int(os.environ.get("OBP_CU_LIMIT", 21000)))
-    rn.add_argument("--lead-slots", type=int, default=2, help="send this many slots before the window. Too early lands in the previous leader block; tune in the pilot (1 vs 2 vs 3)")
+    rn.add_argument("--fee-levels", type=_fee_levels, default="0,1000,10000,100000,1000000",
+                    help="comma list of non-negative micro-lamports per CU")
+    rn.add_argument("--cu-limit", type=_cu_limit, default=os.environ.get("OBP_CU_LIMIT", "21000"),
+                    help="compute-unit limit, 1..1,400,000")
+    rn.add_argument("--lead-slots", type=int, default=2, help="send this many slots before the window. Too early lands in the previous leader block, so tune 1 vs 2 in the pilot")
     rn.add_argument("--send-mode", choices=["seq", "parallel"], default="seq")
     rn.add_argument("--gap-ms", type=int, default=20)
-    rn.add_argument("--payer-arm", choices=["same", "multi"], default="same")
+    rn.add_argument("--payer-arm", choices=["same", "multi", "alternate"], default="same",
+                    help="same payer, multiple payers, or alternate same/multi by burst index")
     rn.add_argument("--max-bursts", type=int, default=0)
     fu = sub.add_parser("fund")
-    fu.add_argument("--lamports", type=int, required=True)
+    fu.add_argument("--lamports", type=_positive_int, required=True)
     fu.add_argument("--live", action="store_true", help="REALLY transfer. Without it nothing is sent.")
     fu.add_argument("--mainnet", action="store_true", help="extra explicit opt-in required for --live on mainnet")
     fu.add_argument("--cap-sol", type=float, default=0.04)
@@ -222,7 +254,7 @@ def main():
         print(f"cluster={cluster} mode={'LIVE' if a.live else 'DRY-RUN'} ledger={ledger.path} "
               f"cap={ledger.cap} already_reserved={ledger.reserved}")
         probe.run_bursts(rpc, send_rpc, plan, p("sent.csv"), ledger, live=a.live, keypairs=kps,
-                         run_id=time.strftime("%m%d%H%M"), fee_levels=[int(x) for x in a.fee_levels.split(",")],
+                         run_id=time.strftime("%m%d%H%M"), fee_levels=a.fee_levels,
                          cu_limit=a.cu_limit, lead_slots=a.lead_slots, send_mode=a.send_mode, gap_ms=a.gap_ms,
                          payer_arm=a.payer_arm, cluster=cluster)
         ledger.snapshot(p("spend_ledger_snapshot.json"))

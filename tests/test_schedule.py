@@ -65,3 +65,11 @@ def test_validate_plan_requires_minimum_targets_and_labels():
         validate_plan(good[:5], 6, 3)
     with pytest.raises(SystemExit):
         validate_plan([{"target": f"t{i}", "label": "L", "window_start": 100 + i} for i in range(6)], 6, 3)
+
+
+def test_unusable_leader_schedule_raises_clear_error():
+    import pytest
+
+    for bad in (None, {"__error__": {"code": -32007, "message": "Slot skipped"}}, ["not", "a", "dict"]):
+        with pytest.raises(SystemExit, match="usable schedule"):
+            upcoming_windows(FakeRpc(now=100, schedule=bad), None, horizon_slots=100)

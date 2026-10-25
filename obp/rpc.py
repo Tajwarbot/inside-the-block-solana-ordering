@@ -22,6 +22,10 @@ CLUSTER_BY_GENESIS = {
     "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY": "testnet",
 }
 RATE_LIMIT_CODES = {-32429, -32005}  # common Solana JSON-RPC rate-limit / throttling codes
+# These codes mean a skipped/pruned/missing slot. Only read methods that may legitimately ask about
+# such a slot get a sentinel result; for sendTransaction (and everything else) they are real errors.
+SENTINEL_CODES = {-32004, -32007, -32009}
+SENTINEL_METHODS = {"getBlock", "getBlockTime", "getBlocks", "getSlotLeaders"}
 
 
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
@@ -53,6 +57,13 @@ class _Retryable(RpcError):
     pass
 
 
+def expect_signature(result) -> str:
+    """A sendTransaction result must be a signature string; anything else is a failure."""
+    if not isinstance(result, str):
+        raise RpcError(f"sendTransaction returned a non-string result: {result!r}")
+    return result
+
+
 class Rpc:
     def __init__(self, url: str = DEFAULT_RPC, timeout: float = 30.0, max_retries: int = 5):
         self.url, self.timeout, self.max_retries = url, timeout, max_retries
@@ -82,8 +93,9 @@ class Rpc:
                 if "error" in j:
                     err = j["error"]
                     code = err.get("code")
-                    # Block unavailable / skipped / missing: return a sentinel, do NOT retry.
-                    if code in (-32004, -32007, -32009):
+                    # Skipped/missing slot on a read method: return a sentinel, do NOT retry.
+                    # On sendTransaction and other methods the same code is a real failure.
+                    if code in SENTINEL_CODES and method in SENTINEL_METHODS:
                         return {"__error__": err}
                     msg = json.dumps(err)
                     if code in RATE_LIMIT_CODES or "rate limit" in msg.lower() or "too many requests" in msg.lower():
