@@ -1,0 +1,8 @@
+keys/
+.env
+*.json.tmp
+__pycache__/
+data/*
+!data/.gitkeep
+!data/runs/
+.venv/
