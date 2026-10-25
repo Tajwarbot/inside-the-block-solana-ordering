@@ -6,8 +6,8 @@ rank correlations between block position and priority fee, and between block pos
 order. Post-Alpenglow mainnet slot time is about **0.212 s**, so a 4-slot leader window is about
 **0.85 s**.
 
-The default mode is dry run. Nothing is sent unless `run` or `fund` receives `--live`; mainnet
-also requires `--mainnet`. The spend cap is hard-coded at 0.05 SOL.
+Default is dry run. `run` and `fund` send nothing without `--live`; mainnet live runs also need
+`--mainnet`. The spend cap is hard-coded at 0.05 SOL.
 
 ## What it measures
 
@@ -16,48 +16,48 @@ The unit of work is a burst: five memo transactions with priority fees of 0, 1,0
 (21,000 by default) and the same instruction shape. The only intentional difference between them
 is the priority fee.
 
-For every burst the tool records:
+Each burst records:
 
 - the slot at send time and whether the send preceded the target window;
 - the landing slot, the actual leader of that slot and whether it is the planned target;
 - the index of each landed transaction in ledger order;
 - every transaction in each block we hit, for a whole-block supplementary check.
 
-The main statistics are Kendall tau of block index against fee and of block index against send
-order, each with a permutation p-value. Only transactions from the same burst that landed in the
-same block are compared. Primary statistics keep only rows with `in_target_window=True` and
-`leader_is_target=True`; a separate sensitivity table shows all landed rows regardless of leader.
+Main statistics: Kendall tau of block index against fee, and of block index against send order,
+each with a permutation p-value. Only same-burst transactions that landed in the same block are
+compared. Primary statistics keep rows with `in_target_window=True` and `leader_is_target=True`;
+a separate sensitivity table shows all landed rows regardless of leader.
 
-## Design and why
+## Design rationale
 
 ### Fee ladder independent of send order
 
 A burst sends the same five fee levels in one of three rotations: ascending, descending or
 shuffled. The mode rotates by burst number. This separates fee from send order. Descending sends
-the highest fee first, so fee order and send order are aligned there; a pure arrival rule would
-also produce a positive fee tau, making descending the confounded rotation. Ascending sends the
-highest fee last, so fee and send order are opposed; ascending is therefore the discriminating
+the highest fee first, so fee order and send order align there. A pure arrival rule would also
+produce a positive fee tau, which makes descending the confounded rotation. Ascending sends the
+highest fee last, so fee and send order oppose; ascending is therefore the discriminating
 rotation. The pre-registered primary set is ascending + shuffled. If position tracks fee in
 ascending bursts, the data supports a fee rule. If it tracks send sequence instead, the data
 supports an arrival-order rule. If it tracks neither, the result is noise.
 
 ### Same-payer and multi-payer arms
 
-In the `same` arm all five transactions use one fee payer, so they write-lock the same account and
-the scheduler must serialise them. This is the cleanest test of the priority rule because the
-transactions cannot execute in parallel.
+In the `same` arm all five transactions share one fee payer, so they write-lock the same account
+and the scheduler must serialise them. They cannot execute in parallel, which makes this the
+cleanest test of the priority rule.
 
-In the `multi` arm the five transactions use different payers, so there is no account-lock
-conflict and the runtime can execute them on different threads. Comparing the two arms shows
-whether the ordering rule still holds when parallel execution is possible. `--payer-arm alternate`
-runs both arms in one session (`same` for even burst indices, `multi` for odd), so time-of-day
-cannot confound the comparison; this is the recommended main-run mode.
+In the `multi` arm each transaction uses a different payer, so there is no account-lock conflict
+and the runtime can execute them on different threads. Comparing arms shows whether the ordering
+rule holds when parallel execution is possible. `--payer-arm alternate` runs both arms in one
+session (`same` for even burst indices, `multi` for odd), so time-of-day cannot confound the
+comparison. This is the recommended main-run mode.
 
 ### Fixed CU limit
 
-Every probe transaction sets the same CU limit and contains the same instructions. Priority fee
-per CU is therefore the only variable the scheduler can rank on. The fee is charged on the CU
-limit, not on CU actually consumed, so the worst-case fee is known before sending.
+Every probe transaction sets the same CU limit and uses the same instructions. Priority fee per CU
+is the only variable the scheduler can rank on. The fee is charged on the CU limit, not on CU
+consumed, so the worst-case fee is known before sending.
 
 ### Window targeting with lead slots
 
@@ -65,12 +65,11 @@ A leader normally holds four consecutive slots (about 0.85 s at 0.212 s/slot). T
 the epoch leader schedule and chooses future windows for validators of the selected client labels.
 The sender fetches the blockhash and prebuilds/signs the whole burst at
 `window_start - lead_slots - 6` or earlier, then waits until `window_start - lead_slots` and sends.
-The default lead is two slots. A three-slot lead was tried on localnet and landed the transactions
-in the block before the target window, because the current leader included them; the pilot therefore
-compares lead 1 against lead 2. Slot polling is every 0.05 s inside the last six slots and uses a
-conservative far-sleep that stays six slots short, so it does not overshoot the short post-Alpenglow
-slots. If the final wait returns a slot at or after `window_start`, the burst is skipped before any
-fee is reserved.
+The default lead is two slots. A three-slot lead on localnet landed transactions in the block
+before the target window, because the current leader included them. The pilot therefore compares
+lead 1 against lead 2. Polling is every 0.05 s inside the last six slots. The far-sleep stays six
+slots short, so it does not overshoot the short post-Alpenglow slots. If the final wait returns a
+slot at or after `window_start`, the burst is skipped before any fee is reserved.
 
 Each row keeps the burst-level `slot_at_send`/`slot_after_send` and also records a per-transaction
 `est_slot_at_send` = `slot_at_send + floor((send_ts_ns - t_wait_return_ns) / 0.212)`. The per-tx
@@ -79,27 +78,27 @@ burst that spans more than one slot is not mislabelled. `send_ts_ns` is taken im
 the HTTP send and `send_done_ns` immediately after it. A burst is marked `burst_late=True` when
 its post-send slot is at or after `window_start + 4`.
 
-The scheduler is not perfectly predictable from the schedule alone, so a separate step confirms
-what actually happened.
+The schedule alone does not fully predict the scheduler, so a separate step confirms what
+happened.
 
 ### verify-windows
 
-`verify-windows` queries `getSlotLeaders` and `getBlocks` for each planned window. A window counts
-as **verified** only when its `window_end` is before the current finalized slot; later windows are
-written with `status=planned` and counted separately as "planned (not yet elapsed)". It records
-whether the target identity led all four slots and which slots produced a block. It works on
-dry-run data because it needs no signatures. Transactions that landed under a different leader are
-marked `leader_is_target=False` and `in_target_window=False`, and are kept out of the primary
-target-window comparison (they still appear in the sensitivity table).
+`verify-windows` queries `getSlotLeaders` and `getBlocks` for each planned window. A window is
+**verified** only when its `window_end` is before the current finalized slot. Later windows are
+written with `status=planned` and counted separately as "planned (not yet elapsed)". The command
+records whether the target identity led all four slots and which slots produced a block. It works
+on dry-run data because it needs no signatures. Transactions that landed under a different leader
+get `leader_is_target=False` and `in_target_window=False`; they stay out of the primary
+target-window comparison and still appear in the sensitivity table.
 
 ### Whole-block supplementary check
 
-`blocks.csv` contains every transaction in each block that one of our transactions landed in:
-ledger index, fee, CU consumed, signature count, vote flag and error flag. This supports a rough
-check of whether the whole block is ordered by approximate priority fee per CU, and where our
-transactions sit relative to unrelated competition. The approximation is
+`blocks.csv` contains every transaction in each block where one of our transactions landed: ledger
+index, fee, CU consumed, signature count, vote flag and error flag. This supports a rough check of
+whether the whole block is ordered by approximate priority fee per CU, and where our transactions
+sit against unrelated competition. The approximation is
 `(fee - 5000 * num_sigs) * 1e6 / cu_consumed`. It ignores exact per-instruction costs and other
-fee components, so it is reported as an approximation everywhere.
+fee components, so results are labelled approximate throughout.
 
 ## How the brief's topics are addressed
 
@@ -109,96 +108,95 @@ fee components, so it is reported as an approximation everywhere.
 identity, vote account, active stake, `clientId`, version, a human label, Jito/BAM flags and the
 TPU QUIC address. `plan` reads the epoch leader schedule, converts relative slot indices to
 absolute slots and selects windows for the requested number of validators per client label.
-`verify-windows` confirms the leader after the fact. This covers the schedule and the client
-types that were actually targeted. It does not claim that the gossip label fully describes the
-ordering path inside a validator.
+`verify-windows` confirms the leader after the fact. This covers the schedule and the client types
+actually targeted. It does not claim that the gossip label fully describes the ordering path
+inside a validator.
 
 ### Path from backend to the executing node
 
-Probe transactions are sent with `sendTransaction` through the configured RPC. `SEND_RPC_URL` can
-point at a different sender, for example a free Helius endpoint. Requests use `skipPreflight:
-true`, `maxRetries: 0` and base64 encoding. Preflight is skipped so the client does not reject a
+Probe transactions go through `sendTransaction` on the configured RPC. `SEND_RPC_URL` can point at
+a different sender, for example a free Helius endpoint. Requests use `skipPreflight: true`,
+`maxRetries: 0` and base64 encoding. Skipping preflight stops the client from rejecting a
 transaction for a stale blockhash or a simulated error before the leader sees it. `maxRetries: 0`
-keeps the sending decision under our control; the tool never retries a send automatically.
+keeps the send decision under our control. The tool never retries a send automatically.
 
-The payer accounts are unstaked, so stake-weighted QoS (SWQoS) can give them little bandwidth.
-This may reduce landing rates, especially at low fees. The code records landing rates by client
-and fee level instead of hiding this. The exact forwarding path through the RPC operator, the
-QUIC connection to the leader's TPU and any relay in between are not observable from our data.
-That is one of the stated limitations.
+The payer accounts are unstaked, so stake-weighted QoS (SWQoS) may give them little bandwidth.
+That can lower landing rates, especially at low fees. The code records landing rates by client and
+fee level rather than omitting them. The exact forwarding path through the RPC operator, the QUIC
+connection to the leader's TPU and any relay in between are not observable from our data. This is
+a stated limitation.
 
 ### Our transactions' interaction with each other
 
 The `same` arm makes the interaction explicit: identical fee payer, hence a write-lock conflict,
 so the five probes cannot execute in parallel. The `multi` arm removes the conflict. The fee
 ladder is rotated independently of send order in both arms. If same-payer bursts follow fee but
-multi-payer bursts do not, lock conflict and parallel execution are a plausible explanation.
+multi-payer bursts do not, lock conflict and parallel execution become a plausible explanation.
 
 ### Competition inside the block
 
 `blocks.csv` records every transaction in the landed blocks with an `is_vote` flag, and `analyze`
 computes an approximate priority-fee ordering over the non-vote transactions. Our transactions are
-a small part of a busy block, so this is supplementary evidence, not the primary result. The
-primary evidence is always transactions we sent ourselves.
+a small part of a busy block. This is supplementary evidence, not the primary result. The primary
+evidence is always transactions we sent ourselves.
 
 ### Send order
 
-`send_seq` is the planned position in the burst. The sender is sequential by default
-(`--send-mode seq`, 20 ms gap), and can run the sends in parallel (`--send-mode parallel`) for a
-separate comparison. The actual order is recorded as `send_rank`, derived by sorting
-`send_ts_ns`, and `tau_send` uses `send_rank` (falling back to `send_seq` only for older files).
-Because the rotations repeat across bursts, a stable relationship between actual send order and
-block index is distinguishable from a fee relationship.
+`send_seq` is the planned position in the burst. Sends are sequential by default
+(`--send-mode seq`, 20 ms gap); `--send-mode parallel` runs them in parallel for a separate
+comparison. The actual order is recorded as `send_rank`, derived by sorting `send_ts_ns`.
+`tau_send` uses `send_rank` (falling back to `send_seq` only for older files). Because the
+rotations repeat across bursts, a stable relationship between actual send order and block index
+is distinguishable from a fee relationship.
 
 ### Noise versus rule
 
 The tool reports tau, permutation p-values, pooled per-label results and landing/timing counts.
 Small samples are expected. A single burst is not treated as evidence. The report keeps a valid
-"no rule" outcome (H0) instead of forcing a fee or arrival story.
+"no rule" outcome (H0) rather than forcing a fee or arrival conclusion.
 
-The **pre-registered primary test** is the pooled mean `tau_fee` per client label on the
-**same-payer** arm, using only target-window rows with the planned leader and only
-**ascending + shuffled** bursts.
+The pre-registered primary test is the pooled mean `tau_fee` per client label on the same-payer
+arm, using only target-window rows with the planned leader and only ascending + shuffled bursts.
 Holm correction is applied across the per-label primary p-values, separately for H1 (fee) and H2
-(send order). Descending bursts are excluded from the primary test because there fee order equals
-send order (confounded); they are a consistency check only. Everything else (multi-payer arm,
+(send order). Descending bursts are excluded from the primary test because fee order equals send
+order there (confounded). They are a consistency check only. Everything else (multi-payer arm,
 descending mode, per-burst, whole-block, landing rates) is exploratory and is marked that way in
 `results.md`.
 
-The explicit verdict rule per label is:
+Verdict rule per label:
 
-- **H1 (fee rule):** pooled mean `tau_fee > 0` with Holm-adjusted `p < 0.05` on the same-payer
-  ascending+shuffled primary set, and `tau_fee > 0` on ascending bursts alone.
-- **H2 (arrival rule):** pooled mean `tau_send > 0` with Holm-adjusted `p < 0.05` on the same
-  primary set, and `tau_send > 0` on ascending bursts alone.
-- **Mixed:** both the H1 and H2 markers hold.
-- **H0:** otherwise, reported as "no rule detected (H0 not rejected)".
-- **Insufficient data:** no primary groups.
+| Outcome | Condition |
+|---|---|
+| H1 (fee rule) | Pooled mean `tau_fee > 0` with Holm-adjusted `p < 0.05` on the same-payer ascending+shuffled primary set, and `tau_fee > 0` on ascending bursts alone. |
+| H2 (arrival rule) | Pooled mean `tau_send > 0` with Holm-adjusted `p < 0.05` on the same primary set, and `tau_send > 0` on ascending bursts alone. |
+| Mixed | Both the H1 and H2 markers hold. |
+| H0 | Otherwise, reported as "no rule detected (H0 not rejected)". |
+| Insufficient data | No primary groups. |
 
-Descending bursts cannot support H1/H2 on their own because fee order and send order coincide there.
-They are reported as a consistency check.
+Descending bursts cannot support H1/H2 on their own because fee order and send order coincide
+there. They are reported as a consistency check.
 
 Only bursts where at least three of our five transactions co-landed in the target block enter the
 tau tests. Higher-fee transactions may land more often, so this conditions on landing and can bias
-the ordering sample toward higher fees. That is a selection effect, not a finding; `results.md`
-reports the landed-per-burst distribution so it can be judged.
+the ordering sample toward higher fees. This is a selection effect, not a finding. `results.md`
+reports the landed-per-burst distribution so readers can judge it.
 
 Dry-run timing rates, verified windows and landing rates are reported separately from the ordering
-tests. Landing rates use live-only denominators, with dry-run timing shown in its own columns.
+tests. Landing rates use live-only denominators; dry-run timing has its own columns.
 
 ## What this does not separate
 
-- Network path versus scheduler. RPC forwarding, SWQoS, TPU admission and relay behaviour add
-  jitter that the experiment does not control or measure directly.
-- Ledger entry order versus real execution order. `block_index` is the order in the ledger. On
-  parallel threads the actual execution order can differ.
-- Leader-side relays and block engines (BAM, Harmonic, Jito) versus the client's own scheduler.
-  A label such as `AgaveBam` describes a stack, not one isolated ordering algorithm.
-- Small samples per validator and per client. The design increases repetitions, but it cannot
+- The experiment does not control or measure jitter from RPC forwarding, SWQoS, TPU admission and
+  relay behaviour, so network path is not separated from scheduler.
+- `block_index` is ledger order. On parallel threads the real execution order can differ, so
+  ledger entry order is not execution order.
+- Leader-side relays and block engines (BAM, Harmonic, Jito) are not separated from the client's
+  own scheduler. A label such as `AgaveBam` describes a stack, not one isolated ordering
+  algorithm.
+- Samples per validator and per client are small. The design increases repetitions but cannot
   make a handful of bursts statistically strong.
-- Alpenglow. The upgrade was on 2026-10-21. All data collected by this tool is post-upgrade and
-  must not be mixed with pre-upgrade measurements. Blocks fetched now contain no vote
-  transactions.
+- All data collected by this tool is post-Alpenglow. The upgrade was on 2026-10-21, so do not mix
+  this data with pre-upgrade measurements. Blocks fetched now contain no vote transactions.
 
 ## Quickstart
 
@@ -210,8 +208,8 @@ docker compose up
 ```
 
 The Compose entrypoint runs `inventory`, `plan`, three dry-run bursts, `collect`,
-`verify-windows` and `analyze`. Dry-run transactions are built and signed with a throwaway
-in-memory key and never sent.
+`verify-windows` and `analyze`. Dry-run transactions use a throwaway in-memory key. They are
+signed and never sent.
 
 The entrypoint always writes the session under `data/runs/<id>` and sets the global ledger root:
 
@@ -220,7 +218,7 @@ export OBP_DATA=/data/runs/${OBP_RUN_ID:-dryrun}
 export OBP_LEDGER_DIR=/data
 ```
 
-Useful overrides:
+Overrides:
 
 ```bash
 # More dry-run bursts in the default dryrun session
@@ -241,8 +239,8 @@ docker compose run --rm --entrypoint python \
 ```
 
 `$OBP_LEDGER_DIR` defaults to the `data` root (in Docker, `/data`), so all sessions share one
-per-cluster spend ledger. `run` and live `fund` write `spend_ledger_snapshot.json` into the session
-so the state is committed with the run.
+per-cluster spend ledger. `run` and live `fund` write `spend_ledger_snapshot.json` into the
+session, so the committed state travels with the run.
 
 ### Plain Python environment
 
@@ -277,12 +275,12 @@ after the subcommand:
 
 Precedence is `--run-dir`, then `OBP_DATA`, then `data`. The default remains `data` when neither
 is set. For a real measurement campaign, set a fresh `OBP_DATA=data/runs/<YYYYMMDD>_<name>` for
-every session so the data is timestamped and committed. `data/runs/` is not git-ignored; other
-directories under `data/` are.
+every session, so each dataset is timestamped and committed. `data/runs/` is not git-ignored;
+other directories under `data/` are.
 
-Payer keys for a live run. Every live command must write to a named session directory under
-`data/runs/<id>`. The runbook order is: **pilot (cap 0.002) -> fund -> main (alternate arm) ->
-repeat -> collect -> analyze**.
+Live runs need payer keys. Every live command must write to a named session directory under
+`data/runs/<id>`. Runbook order: pilot (cap 0.002) -> fund -> main (alternate arm) -> repeat ->
+collect -> analyze.
 
 ```bash
 export OBP_KEYPAIRS=/absolute/path/payer.json,/absolute/path/payer2.json,/absolute/path/payer3.json,/absolute/path/payer4.json,/absolute/path/payer5.json
@@ -479,17 +477,17 @@ counts.
 
 ## Safety and spend control
 
-- Dry run is the default for `run` and `fund`. A dry-run transaction is built and signed with a
-  throwaway in-memory key that is never funded and never saved.
+- `run` and `fund` default to dry run. A dry-run transaction is built and signed with a throwaway
+  in-memory key that is never funded and never saved.
 - Live requires `--live`. On mainnet it also requires `--mainnet`. The cluster is identified from
   the genesis hash; `RPC_URL` and `SEND_RPC_URL` must report the same cluster.
 - The spend ledger is persistent, split by cluster (`spend_ledger_mainnet.json`,
-  `spend_ledger_localnet.json`, and so on) and **global across sessions**. It lives in
+  `spend_ledger_localnet.json`, and so on) and global across sessions. It lives in
   `$OBP_LEDGER_DIR` (default: the `data` root; `/data` in Docker), not in the per-session
   directory. `$OBP_LEDGER_DIR` is expanded and resolved with `realpath`, so a relative or `~`
-  value is recorded as an absolute path. Read-modify-write is guarded by an OS `fcntl.flock` on a
-  `.lock` file and re-reads the file inside the lock, so concurrent sessions cannot jointly exceed
-  the cap. Reservations are never released, including for transactions that do not land. `run` and
+  value is recorded as an absolute path. Read-modify-write takes an OS `fcntl.flock` on a `.lock`
+  file and re-reads the file inside the lock, so concurrent sessions cannot jointly exceed the
+  cap. Reservations are never released, including for transactions that do not land. `run` and
   live `fund` write `spend_ledger_snapshot.json` into the session for the commit; its
   `source_ledger` field is the resolved global ledger path.
 - Because the ledger is global, `--cap-sol` is a running total across every session for that
@@ -537,7 +535,7 @@ accounts are emptied.
 ## Raw data dictionary
 
 A session lives in one directory, normally `data/runs/<YYYYMMDD>_<name>/`. The files below are
-written there and are intended to be committed.
+written there and are meant to be committed.
 
 | File | Contents |
 |---|---|
@@ -555,7 +553,7 @@ written there and are intended to be committed.
 | `results_by_group.csv` | Grouped exploratory results by payer arm and order mode, per label. |
 | `leader_schedule_cache.json` | Cached leader schedule keyed by `(cluster, epoch)` (large, optional). |
 
-The live ledger itself is global, not per-session; each session commits only
+The live ledger is global, not per-session. Each session commits only
 `spend_ledger_snapshot.json` (see the ledger section below).
 
 ### validators.csv
@@ -679,9 +677,10 @@ The live ledger itself is global, not per-session; each session commits only
 | `tau_send` | Kendall tau of block index against actual `send_rank`. Positive means earlier send earlier. |
 | `p_send` | Two-sided permutation p-value for `tau_send`. |
 
-Rows are written only for groups with at least three of our transactions in the same block, and
-results.csv keeps only target-window rows with the planned leader. `results_by_group.csv` has the
-same columns grouped by `payer_arm` and `order_mode` per label, with burst and transaction counts.
+Rows are written only for groups with at least three of our transactions in the same block.
+`results.csv` keeps only target-window rows with the planned leader. `results_by_group.csv` has
+the same columns grouped by `payer_arm` and `order_mode` per label, with burst and transaction
+counts.
 
 ### results.md
 
