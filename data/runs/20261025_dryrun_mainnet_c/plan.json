@@ -1,0 +1,163 @@
+{
+ "created_slot": 461321132,
+ "created_at": "2026-10-25T16:14:13Z",
+ "cluster": "mainnet",
+ "plan": [
+  {
+   "target": "BtsmiEEvnSuUnKxqXj2PZRYpPJAc7C34mGz8gtJ1DAaH",
+   "label": "HarmonicAgave",
+   "version": "4.3.2",
+   "window_start": 461321176
+  },
+  {
+   "target": "C8Bey3LKVJHVqN6xPTeW8WJfUgFQAeGNBpT4Rp99JP1k",
+   "label": "JitoLabs",
+   "version": "4.3.2",
+   "window_start": 461321192
+  },
+  {
+   "target": "7PdKhpKz7T39vZHFL1UfcYNDsLvay6hp4KPQq1aUckFf",
+   "label": "Rakurai",
+   "version": "4.3.2",
+   "window_start": 461321596
+  },
+  {
+   "target": "JD549HsbJHeEKKUrKgg4Fj2iyv2RGjsV7NTZjZUrHybB",
+   "label": "Firedancer",
+   "version": "26.10.4",
+   "window_start": 461321816
+  },
+  {
+   "target": "Fd7btgySsrjuo25CJCj7oE7VPMyezDhnx7pZkj2v69Nk",
+   "label": "HarmonicAgave",
+   "version": "4.3.2",
+   "window_start": 461321920
+  },
+  {
+   "target": "Fc6NNdS2j3EmrWbU6Uqt6wsKB5ef72NjaWfNxKYbULGD",
+   "label": "AgaveBam",
+   "version": "4.3.2",
+   "window_start": 461321976
+  },
+  {
+   "target": "9eGrDohdNTAo61DRHyfMuqKWXqYnA3i254Wiszxe8FoY",
+   "label": "Firedancer",
+   "version": "26.10.4",
+   "window_start": 461322192
+  },
+  {
+   "target": "E3mDbFMr8yZcCAZx5wPUFCRmLX31u8Nnj4jPoPc54h3F",
+   "label": "Rakurai",
+   "version": "4.3.2",
+   "window_start": 461323460
+  },
+  {
+   "target": "87CcUxpyR72ZyfaZirj86mqkbk5uuU2EfnwTegVMLJL5",
+   "label": "HarmonicFiredancer",
+   "version": "26.10.4",
+   "window_start": 461324696
+  },
+  {
+   "target": "PRGNnb8DxVcP2WjSHfVRGgc8SkA5u6dbMwoTVV1BGKN",
+   "label": "FireBAM",
+   "version": "26.10.4",
+   "window_start": 461325260
+  },
+  {
+   "target": "9jxgosAfHgHzwnxsHw4RAZYaLVokMbnYtmiZBreynGFP",
+   "label": "FireBAM",
+   "version": "26.10.4",
+   "window_start": 461325400
+  },
+  {
+   "target": "6y7V8dL673XFzm9QyC5vvh3itWkp7wztahBd2yDqsyrK",
+   "label": "AgaveBam",
+   "version": "4.3.2",
+   "window_start": 461325720
+  },
+  {
+   "target": "5pPRHniefFjkiaArbGX3Y8NUysJmQ9tMZg3FrFGwHzSm",
+   "label": "JitoLabs",
+   "version": "4.3.2",
+   "window_start": 461326072
+  },
+  {
+   "target": "6ptuwW4rg5A3wP9hNKxeymG3QhSagugPd3grnMTGJwWG",
+   "label": "HarmonicFiredancer",
+   "version": "26.10.4",
+   "window_start": 461326176
+  },
+  {
+   "target": "BtsmiEEvnSuUnKxqXj2PZRYpPJAc7C34mGz8gtJ1DAaH",
+   "label": "HarmonicAgave",
+   "version": "4.3.2",
+   "window_start": 461326320
+  },
+  {
+   "target": "C8Bey3LKVJHVqN6xPTeW8WJfUgFQAeGNBpT4Rp99JP1k",
+   "label": "JitoLabs",
+   "version": "4.3.2",
+   "window_start": 461326400
+  },
+  {
+   "target": "JD549HsbJHeEKKUrKgg4Fj2iyv2RGjsV7NTZjZUrHybB",
+   "label": "Firedancer",
+   "version": "26.10.4",
+   "window_start": 461326456
+  },
+  {
+   "target": "Fd7btgySsrjuo25CJCj7oE7VPMyezDhnx7pZkj2v69Nk",
+   "label": "HarmonicAgave",
+   "version": "4.3.2",
+   "window_start": 461326568
+  },
+  {
+   "target": "Fc6NNdS2j3EmrWbU6Uqt6wsKB5ef72NjaWfNxKYbULGD",
+   "label": "AgaveBam",
+   "version": "4.3.2",
+   "window_start": 461326656
+  },
+  {
+   "target": "9eGrDohdNTAo61DRHyfMuqKWXqYnA3i254Wiszxe8FoY",
+   "label": "Firedancer",
+   "version": "26.10.4",
+   "window_start": 461326896
+  },
+  {
+   "target": "PRGNnb8DxVcP2WjSHfVRGgc8SkA5u6dbMwoTVV1BGKN",
+   "label": "FireBAM",
+   "version": "26.10.4",
+   "window_start": 461326952
+  },
+  {
+   "target": "C8Bey3LKVJHVqN6xPTeW8WJfUgFQAeGNBpT4Rp99JP1k",
+   "label": "JitoLabs",
+   "version": "4.3.2",
+   "window_start": 461326992
+  },
+  {
+   "target": "Fd7btgySsrjuo25CJCj7oE7VPMyezDhnx7pZkj2v69Nk",
+   "label": "HarmonicAgave",
+   "version": "4.3.2",
+   "window_start": 461327020
+  },
+  {
+   "target": "Fc6NNdS2j3EmrWbU6Uqt6wsKB5ef72NjaWfNxKYbULGD",
+   "label": "AgaveBam",
+   "version": "4.3.2",
+   "window_start": 461327040
+  },
+  {
+   "target": "C8Bey3LKVJHVqN6xPTeW8WJfUgFQAeGNBpT4Rp99JP1k",
+   "label": "JitoLabs",
+   "version": "4.3.2",
+   "window_start": 461327064
+  },
+  {
+   "target": "Fd7btgySsrjuo25CJCj7oE7VPMyezDhnx7pZkj2v69Nk",
+   "label": "HarmonicAgave",
+   "version": "4.3.2",
+   "window_start": 461327132
+  }
+ ]
+}

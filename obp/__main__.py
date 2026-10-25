@@ -146,7 +146,7 @@ def main():
     rn.add_argument("--cap-sol", type=float, default=0.04)
     rn.add_argument("--fee-levels", default="0,1000,10000,100000,1000000", help="micro-lamports per CU")
     rn.add_argument("--cu-limit", type=int, default=int(os.environ.get("OBP_CU_LIMIT", 21000)))
-    rn.add_argument("--lead-slots", type=int, default=3)
+    rn.add_argument("--lead-slots", type=int, default=2, help="send this many slots before the window. Too early lands in the previous leader block; tune in the pilot (1 vs 2 vs 3)")
     rn.add_argument("--send-mode", choices=["seq", "parallel"], default="seq")
     rn.add_argument("--gap-ms", type=int, default=20)
     rn.add_argument("--payer-arm", choices=["same", "multi"], default="same")

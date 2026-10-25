@@ -84,7 +84,7 @@ def _wait_for_slot(rpc: Rpc, target_slot: int, poll=0.05, give_up_after=900):
 
 def run_bursts(rpc: Rpc, send_rpc: Rpc, plan: list[dict], out_csv: str, ledger: SpendLedger, *,
                live: bool, keypairs: list, run_id: str, fee_levels: list[int], cu_limit: int,
-               lead_slots: int = 3, send_mode: str = "seq", gap_ms: int = 20, payer_arm: str = "same",
+               lead_slots: int = 2, send_mode: str = "seq", gap_ms: int = 20, payer_arm: str = "same",
                seed: int = 1, cluster: str = "localnet"):
     if live and not keypairs:
         raise SystemExit("--live needs payer keypairs (OBP_KEYPAIRS or the default /keys/payer*.json files)")

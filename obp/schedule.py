@@ -39,32 +39,31 @@ def upcoming_windows(rpc: Rpc, cache_path: str | None = None, horizon_slots: int
     return {k: sorted(v) for k, v in out.items()}, now
 
 
-def min_gap_filter(candidates: list[dict], min_gap_slots: int = 12) -> list[dict]:
-    """Apply the global gap rule with per-target round-robin, so one busy target cannot starve
-    every other target/label. Within a target windows are considered earliest first."""
-    queues = defaultdict(deque)
-    for item in sorted(candidates, key=lambda x: (int(x["window_start"]), x.get("target", ""))):
-        queues[item["target"]].append(item)
-    targets = sorted(queues, key=lambda t: int(queues[t][0]["window_start"]))
+def min_gap_filter(candidates: list[dict], min_gap_slots: int = 12, slack_slots: int = 64) -> list[dict]:
+    """Time-ordered greedy sweep with a fairness rule. At each step, look at the eligible windows
+    (start >= last kept + min_gap_slots) that begin within `slack_slots` of the earliest eligible one,
+    and keep the one whose target (then label) has the fewest kept bursts so far. This keeps bursts
+    spaced out without letting the busiest validators starve the rest."""
+    items = sorted(candidates, key=lambda x: (int(x["window_start"]), x.get("target", "")))
     kept, last = [], None
-    while any(queues[t] for t in targets):
-        progressed = False
-        for target in targets:
-            q = queues[target]
-            while q:
-                item = q[0]
-                ws = int(item["window_start"])
-                if last is None or ws - last >= int(min_gap_slots):
-                    kept.append(item)
-                    q.popleft()
-                    last = ws
-                    progressed = True
-                    break
-                # `last` only moves forward, so this window can never become eligible later.
-                q.popleft()
-        if not progressed:
-            break
-    return sorted(kept, key=lambda x: int(x["window_start"]))
+    per_target, per_label = defaultdict(int), defaultdict(int)
+    i = 0
+    while i < len(items):
+        if last is not None and int(items[i]["window_start"]) - last < int(min_gap_slots):
+            i += 1
+            continue
+        first = int(items[i]["window_start"])
+        j = i
+        while j < len(items) and int(items[j]["window_start"]) - first <= slack_slots:
+            j += 1
+        pick = min(items[i:j], key=lambda x: (per_target[x["target"]], per_label[x.get("label", "")],
+                                               int(x["window_start"])))
+        kept.append(pick)
+        last = int(pick["window_start"])
+        per_target[pick["target"]] += 1
+        per_label[pick.get("label", "")] += 1
+        i = items.index(pick) + 1
+    return kept
 
 
 def validate_plan(plan: list[dict], min_validators: int = 6, min_labels: int = 3) -> dict:
