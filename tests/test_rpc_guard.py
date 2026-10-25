@@ -6,7 +6,7 @@ from obp.rpc import CLUSTER_BY_GENESIS, Rpc, RpcError, cluster_name, guard_live_
 
 
 def test_cluster_name_map():
-    assert cluster_name("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dWZ5DE") == "mainnet"
+    assert cluster_name("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d") == "mainnet"
     assert cluster_name("EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG") == "devnet"
     assert cluster_name("4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY") == "testnet"
     assert cluster_name("some-local-genesis") == "localnet"
@@ -69,3 +69,16 @@ def test_send_transaction_is_never_retried(monkeypatch):
     with pytest.raises(RpcError):
         rpc.call("sendTransaction", ["raw"])
     assert len(calls) == 1
+
+
+def test_unknown_remote_cluster_refuses_live():
+    import pytest
+    assert cluster_name("some-genesis", "https://rpc.example.com") == "unknown"
+    assert cluster_name("some-genesis", "http://127.0.0.1:8899") == "localnet"
+    with pytest.raises(SystemExit):
+        guard_live_cluster("unknown", live=True, allow_mainnet=True)
+
+
+def test_real_mainnet_genesis_hash_is_mainnet():
+    # value returned by api.mainnet-beta.solana.com getGenesisHash
+    assert cluster_name("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d", "https://x") == "mainnet"

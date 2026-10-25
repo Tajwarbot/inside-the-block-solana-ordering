@@ -13,21 +13,31 @@ import requests
 log = logging.getLogger("obp.rpc")
 DEFAULT_RPC = os.environ.get("RPC_URL", "https://api.mainnet-beta.solana.com")
 
-# Genesis hashes are stable cluster identities. Anything else is treated as a local test cluster.
+# Genesis hashes are stable cluster identities (mainnet value checked live with getGenesisHash on 2026-10-25).
+# An unknown genesis hash counts as "localnet" ONLY if the RPC URL is on localhost; otherwise "unknown",
+# and live sending on "unknown" is refused.
 CLUSTER_BY_GENESIS = {
-    "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dWZ5DE": "mainnet",
+    "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d": "mainnet",
     "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG": "devnet",
     "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY": "testnet",
 }
 RATE_LIMIT_CODES = {-32429, -32005}  # common Solana JSON-RPC rate-limit / throttling codes
 
 
-def cluster_name(genesis_hash: str) -> str:
-    return CLUSTER_BY_GENESIS.get(genesis_hash, "localnet")
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+
+
+def cluster_name(genesis_hash: str, url: str = "http://127.0.0.1") -> str:
+    from urllib.parse import urlparse
+    if genesis_hash in CLUSTER_BY_GENESIS:
+        return CLUSTER_BY_GENESIS[genesis_hash]
+    return "localnet" if (urlparse(url).hostname or "") in LOCAL_HOSTS else "unknown"
 
 
 def guard_live_cluster(cluster: str, *, live: bool, allow_mainnet: bool) -> None:
     """Mainnet live runs need an extra explicit opt-in, on top of --live."""
+    if live and cluster == "unknown":
+        raise SystemExit("Refusing to send: unknown cluster (genesis hash not recognised and RPC is not localhost).")
     if live and cluster == "mainnet" and not allow_mainnet:
         raise SystemExit(
             "Refusing to send on mainnet: pass --live --mainnet explicitly "
@@ -98,7 +108,7 @@ class Rpc:
         return self._genesis
 
     def cluster(self) -> str:
-        return cluster_name(self.genesis_hash())
+        return cluster_name(self.genesis_hash(), self.url)
 
     def slot(self, commitment="processed"):
         return self.call("getSlot", [{"commitment": commitment}])

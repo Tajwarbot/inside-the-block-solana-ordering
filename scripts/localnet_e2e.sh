@@ -16,7 +16,7 @@ print(Rpc().cluster())
 PY
 )"
 case "$cluster" in
-  mainnet|devnet|testnet)
+  mainnet|devnet|testnet|unknown)
     echo "ABORT: RPC_URL points at $cluster, not a local test validator" >&2
     exit 2
     ;;
