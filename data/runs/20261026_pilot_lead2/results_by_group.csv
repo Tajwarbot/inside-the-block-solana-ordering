@@ -1,0 +1,9 @@
+label,group_by,group,bursts,txs,mean_tau_fee,p_fee,mean_tau_send,p_send
+Agave,payer_arm,same,1,3,1.0,0.332,1.0,0.332
+Agave,order_mode,desc,1,3,1.0,0.332,1.0,0.332
+Firedancer,payer_arm,same,1,3,-1.0,0.332,1.0,0.332
+Firedancer,order_mode,asc,1,3,-1.0,0.332,1.0,0.332
+HarmonicAgave,payer_arm,same,1,3,-1.0,0.332,1.0,0.332
+HarmonicAgave,order_mode,asc,1,3,-1.0,0.332,1.0,0.332
+JitoLabs,payer_arm,same,1,3,0.3333333333333333,1.0,1.0,0.332
+JitoLabs,order_mode,shuffle,1,3,0.3333333333333333,1.0,1.0,0.332

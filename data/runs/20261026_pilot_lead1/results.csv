@@ -1,0 +1,4 @@
+run,burst,slot,target,label,order_mode,payer_arm,n_same_block,in_target_window,tau_fee,p_fee,tau_send,p_send
+10260022,2,461357579,EkvdKhULbMFqjKBKotAzGi3kwMvMpYNDKJXXQQmi6C1f,HarmonicAgave,shuffle,same,3,True,0.3333333333333333,1.0,1.0,0.318
+10260022,3,461357629,9eGrDohdNTAo61DRHyfMuqKWXqYnA3i254Wiszxe8FoY,Firedancer,asc,same,3,True,-1.0,0.3345,1.0,0.347
+10260022,4,461357694,5Cchr1XGEg7dbBXByV5NY2ad8jfxAM7HA3x8D56rq9Ux,AgaveBam,desc,same,3,True,1.0,0.332,1.0,0.3315

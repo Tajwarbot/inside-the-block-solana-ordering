@@ -1,0 +1,7 @@
+2026-10-26 00:24:39,822 INFO obp.probe burst 0 -> FBKFWadX (HarmonicAgave) window 461357956 mode=asc arm=same sent_at_slot=461357955 offset=[-1..0] after=461357957 late=False LIVE payers=1 remaining_cap=1758345
+2026-10-26 00:24:49,700 INFO obp.probe burst 1 -> 7QQGNm3p (Agave) window 461358004 mode=desc arm=same sent_at_slot=461358002 offset=[-2..-1] after=461358004 late=False LIVE payers=1 remaining_cap=1710014
+2026-10-26 00:24:58,280 INFO obp.probe burst 2 -> C8Bey3LK (JitoLabs) window 461358044 mode=shuffle arm=same sent_at_slot=461358042 offset=[-2..-1] after=461358044 late=False LIVE payers=1 remaining_cap=1661683
+2026-10-26 00:25:09,704 INFO obp.probe burst 3 -> 9eGrDohd (Firedancer) window 461358096 mode=asc arm=same sent_at_slot=461358094 offset=[-2..0] after=461358096 late=False LIVE payers=1 remaining_cap=1613352
+2026-10-26 00:25:30,973 INFO obp.probe burst 4 -> C8Bey3LK (JitoLabs) window 461358196 mode=desc arm=same sent_at_slot=461358194 offset=[-2..0] after=461358196 late=False LIVE payers=1 remaining_cap=1565021
+2026-10-26 00:25:55,369 INFO obp.collect landed 25/25
+2026-10-26 00:25:56,323 INFO obp.windows checked 35 windows: 6 verified (6 target led all 4 slots), 29 planned/not yet elapsed

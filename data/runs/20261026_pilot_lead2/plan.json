@@ -1,0 +1,217 @@
+{
+ "created_slot": 461357821,
+ "created_at": "2026-10-25T18:24:11Z",
+ "cluster": "mainnet",
+ "plan": [
+  {
+   "target": "FBKFWadXZJahGtFitAsBvbqh5968gLY7dMBBJUoUjeNi",
+   "label": "HarmonicAgave",
+   "version": "4.3.2",
+   "window_start": 461357956
+  },
+  {
+   "target": "7QQGNm3ptwinipDCyaCF7jY5katgmFUu1ieP2f7nwLpE",
+   "label": "Agave",
+   "version": "4.3.2",
+   "window_start": 461358004
+  },
+  {
+   "target": "C8Bey3LKVJHVqN6xPTeW8WJfUgFQAeGNBpT4Rp99JP1k",
+   "label": "JitoLabs",
+   "version": "4.3.2",
+   "window_start": 461358044
+  },
+  {
+   "target": "9eGrDohdNTAo61DRHyfMuqKWXqYnA3i254Wiszxe8FoY",
+   "label": "Firedancer",
+   "version": "26.10.4",
+   "window_start": 461358096
+  },
+  {
+   "target": "C8Bey3LKVJHVqN6xPTeW8WJfUgFQAeGNBpT4Rp99JP1k",
+   "label": "JitoLabs",
+   "version": "4.3.2",
+   "window_start": 461358196
+  },
+  {
+   "target": "C8Bey3LKVJHVqN6xPTeW8WJfUgFQAeGNBpT4Rp99JP1k",
+   "label": "JitoLabs",
+   "version": "4.3.2",
+   "window_start": 461358216
+  },
+  {
+   "target": "5Cchr1XGEg7dbBXByV5NY2ad8jfxAM7HA3x8D56rq9Ux",
+   "label": "AgaveBam",
+   "version": "4.3.2",
+   "window_start": 461358336
+  },
+  {
+   "target": "C8Bey3LKVJHVqN6xPTeW8WJfUgFQAeGNBpT4Rp99JP1k",
+   "label": "JitoLabs",
+   "version": "4.3.2",
+   "window_start": 461358468
+  },
+  {
+   "target": "9eGrDohdNTAo61DRHyfMuqKWXqYnA3i254Wiszxe8FoY",
+   "label": "Firedancer",
+   "version": "26.10.4",
+   "window_start": 461358552
+  },
+  {
+   "target": "5Cchr1XGEg7dbBXByV5NY2ad8jfxAM7HA3x8D56rq9Ux",
+   "label": "AgaveBam",
+   "version": "4.3.2",
+   "window_start": 461358564
+  },
+  {
+   "target": "C8Bey3LKVJHVqN6xPTeW8WJfUgFQAeGNBpT4Rp99JP1k",
+   "label": "JitoLabs",
+   "version": "4.3.2",
+   "window_start": 461358588
+  },
+  {
+   "target": "C8Bey3LKVJHVqN6xPTeW8WJfUgFQAeGNBpT4Rp99JP1k",
+   "label": "JitoLabs",
+   "version": "4.3.2",
+   "window_start": 461358624
+  },
+  {
+   "target": "5Cchr1XGEg7dbBXByV5NY2ad8jfxAM7HA3x8D56rq9Ux",
+   "label": "AgaveBam",
+   "version": "4.3.2",
+   "window_start": 461358744
+  },
+  {
+   "target": "87CcUxpyR72ZyfaZirj86mqkbk5uuU2EfnwTegVMLJL5",
+   "label": "HarmonicFiredancer",
+   "version": "26.10.4",
+   "window_start": 461358820
+  },
+  {
+   "target": "9eGrDohdNTAo61DRHyfMuqKWXqYnA3i254Wiszxe8FoY",
+   "label": "Firedancer",
+   "version": "26.10.4",
+   "window_start": 461358848
+  },
+  {
+   "target": "FBKFWadXZJahGtFitAsBvbqh5968gLY7dMBBJUoUjeNi",
+   "label": "HarmonicAgave",
+   "version": "4.3.2",
+   "window_start": 461358916
+  },
+  {
+   "target": "9eGrDohdNTAo61DRHyfMuqKWXqYnA3i254Wiszxe8FoY",
+   "label": "Firedancer",
+   "version": "26.10.4",
+   "window_start": 461359008
+  },
+  {
+   "target": "87CcUxpyR72ZyfaZirj86mqkbk5uuU2EfnwTegVMLJL5",
+   "label": "HarmonicFiredancer",
+   "version": "26.10.4",
+   "window_start": 461359124
+  },
+  {
+   "target": "9eGrDohdNTAo61DRHyfMuqKWXqYnA3i254Wiszxe8FoY",
+   "label": "Firedancer",
+   "version": "26.10.4",
+   "window_start": 461359204
+  },
+  {
+   "target": "A4hyMd3FyvUJSRafDUSwtLLaQcxRP4r1BRC9w2AJ1to2",
+   "label": "FireBAM",
+   "version": "26.10.4",
+   "window_start": 461359312
+  },
+  {
+   "target": "5Cchr1XGEg7dbBXByV5NY2ad8jfxAM7HA3x8D56rq9Ux",
+   "label": "AgaveBam",
+   "version": "4.3.2",
+   "window_start": 461359360
+  },
+  {
+   "target": "9eGrDohdNTAo61DRHyfMuqKWXqYnA3i254Wiszxe8FoY",
+   "label": "Firedancer",
+   "version": "26.10.4",
+   "window_start": 461359372
+  },
+  {
+   "target": "7QQGNm3ptwinipDCyaCF7jY5katgmFUu1ieP2f7nwLpE",
+   "label": "Agave",
+   "version": "4.3.2",
+   "window_start": 461359656
+  },
+  {
+   "target": "FBKFWadXZJahGtFitAsBvbqh5968gLY7dMBBJUoUjeNi",
+   "label": "HarmonicAgave",
+   "version": "4.3.2",
+   "window_start": 461359716
+  },
+  {
+   "target": "FBKFWadXZJahGtFitAsBvbqh5968gLY7dMBBJUoUjeNi",
+   "label": "HarmonicAgave",
+   "version": "4.3.2",
+   "window_start": 461359728
+  },
+  {
+   "target": "FBKFWadXZJahGtFitAsBvbqh5968gLY7dMBBJUoUjeNi",
+   "label": "HarmonicAgave",
+   "version": "4.3.2",
+   "window_start": 461359800
+  },
+  {
+   "target": "87CcUxpyR72ZyfaZirj86mqkbk5uuU2EfnwTegVMLJL5",
+   "label": "HarmonicFiredancer",
+   "version": "26.10.4",
+   "window_start": 461359868
+  },
+  {
+   "target": "9eGrDohdNTAo61DRHyfMuqKWXqYnA3i254Wiszxe8FoY",
+   "label": "Firedancer",
+   "version": "26.10.4",
+   "window_start": 461360000
+  },
+  {
+   "target": "87CcUxpyR72ZyfaZirj86mqkbk5uuU2EfnwTegVMLJL5",
+   "label": "HarmonicFiredancer",
+   "version": "26.10.4",
+   "window_start": 461360104
+  },
+  {
+   "target": "7QQGNm3ptwinipDCyaCF7jY5katgmFUu1ieP2f7nwLpE",
+   "label": "Agave",
+   "version": "4.3.2",
+   "window_start": 461360176
+  },
+  {
+   "target": "A4hyMd3FyvUJSRafDUSwtLLaQcxRP4r1BRC9w2AJ1to2",
+   "label": "FireBAM",
+   "version": "26.10.4",
+   "window_start": 461360260
+  },
+  {
+   "target": "C8Bey3LKVJHVqN6xPTeW8WJfUgFQAeGNBpT4Rp99JP1k",
+   "label": "JitoLabs",
+   "version": "4.3.2",
+   "window_start": 461360356
+  },
+  {
+   "target": "A4hyMd3FyvUJSRafDUSwtLLaQcxRP4r1BRC9w2AJ1to2",
+   "label": "FireBAM",
+   "version": "26.10.4",
+   "window_start": 461360476
+  },
+  {
+   "target": "C8Bey3LKVJHVqN6xPTeW8WJfUgFQAeGNBpT4Rp99JP1k",
+   "label": "JitoLabs",
+   "version": "4.3.2",
+   "window_start": 461360620
+  },
+  {
+   "target": "5Cchr1XGEg7dbBXByV5NY2ad8jfxAM7HA3x8D56rq9Ux",
+   "label": "AgaveBam",
+   "version": "4.3.2",
+   "window_start": 461360704
+  }
+ ]
+}

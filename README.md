@@ -9,6 +9,14 @@ order. Post-Alpenglow mainnet slot time is about **0.212 s**, so a 4-slot leader
 Default is dry run. `run` and `fund` send nothing without `--live`; mainnet live runs also need
 `--mainnet`. The spend cap is hard-coded at 0.05 SOL.
 
+## Results (measured 2026-10-25 UTC)
+
+Main sequential session: 125 bursts, 625 txs, all 625 landed. Send order decided block and position for every client label and fee had no visible effect. A sequential burst spans about two slots (median 413.8 ms), so the five fees never competed in one scheduler batch. This does not show that schedulers ignore fees.
+
+The exploratory second session used `--send-mode parallel` (66 bursts, 330 txs, 325 landed; the 5 misses were send errors at the public RPC). Higher fee tended to come first for Firedancer, HarmonicAgave, HarmonicFiredancer and same-payer AgaveBam; JitoLabs, FireBAM and Rakurai were not significant; vanilla Agave went the other way on 5 bursts (weak). Whole-block priority ordering was near zero.
+
+Tables, p-values and caveats: [REPORT.md](REPORT.md).
+
 ## What it measures
 
 The unit of work is a burst: five memo transactions with priority fees of 0, 1,000, 10,000,
@@ -755,7 +763,7 @@ script never touches mainnet, devnet or testnet.
 ```text
 obp/                Python package and CLI
 tests/              pytest suite
-scripts/            localnet end-to-end script
+scripts/            localnet end-to-end script, burst split report (burst_split.py)
 data/runs/          committed measurement sessions
 keys/               git-ignored keypair volume; never committed
 ```
