@@ -117,6 +117,7 @@ def cmd_fund(a, rpc, send_rpc):
         except Exception as e:  # noqa: BLE001
             failed.append(kp.pubkey())
             print(f"FAILED -> {kp.pubkey()}: {e}")
+    ledger.snapshot(p("spend_ledger_snapshot.json"))
     if failed:
         raise SystemExit(f"{len(failed)} funding transfer(s) failed")
 
@@ -133,18 +134,19 @@ def main():
     pl.add_argument("--windows", type=int, default=4); pl.add_argument("--horizon", type=int, default=20_000)
     pl.add_argument("--labels", default="", help="comma list to restrict client labels")
     pl.add_argument("--min-labels", type=int, default=3)
+    pl.add_argument("--min-validators", type=int, default=6)
     pl.add_argument("--min-windows", type=int, default=3)
     pl.add_argument("--min-lead-slots", type=int, default=25,
                     help="only plan windows starting at least this many slots after the current slot")
     pl.add_argument("--min-gap-slots", type=int, default=12,
-                    help="do not plan two windows that start less than this many slots apart; keep the earliest")
+                    help="do not plan two windows that start less than this many slots apart; per-target round-robin picks who gets it")
     rn = sub.add_parser("run")
     rn.add_argument("--live", action="store_true", help="REALLY send. Without it nothing is sent.")
     rn.add_argument("--mainnet", action="store_true", help="extra explicit opt-in required for --live on mainnet")
     rn.add_argument("--cap-sol", type=float, default=0.04)
     rn.add_argument("--fee-levels", default="0,1000,10000,100000,1000000", help="micro-lamports per CU")
     rn.add_argument("--cu-limit", type=int, default=int(os.environ.get("OBP_CU_LIMIT", 21000)))
-    rn.add_argument("--lead-slots", type=int, default=2)
+    rn.add_argument("--lead-slots", type=int, default=3)
     rn.add_argument("--send-mode", choices=["seq", "parallel"], default="seq")
     rn.add_argument("--gap-ms", type=int, default=20)
     rn.add_argument("--payer-arm", choices=["same", "multi"], default="same")
@@ -182,21 +184,32 @@ def main():
             r["stake_sol"] = float(r["stake_sol"])
         if a.labels:
             keep = set(a.labels.split(",")); inv = [r for r in inv if r["label"] in keep]
+        cluster = rpc.cluster()
         wins, now = schedule.upcoming_windows(rpc, p("leader_schedule_cache.json"), a.horizon,
-                                             min_lead_slots=a.min_lead_slots)
+                                             min_lead_slots=a.min_lead_slots, cluster=cluster)
         tg = schedule.pick_targets(inv, wins, per_label=a.per_label, min_labels=a.min_labels,
                                    min_windows=a.min_windows)
         candidates = [{"target": t["identity"], "label": t["label"], "version": t["version"], "window_start": w}
                       for t in tg for w in wins[t["identity"]][: a.windows]]
         plan = schedule.min_gap_filter(candidates, a.min_gap_slots)
+        summary = schedule.validate_plan(plan, a.min_validators, a.min_labels)
         json.dump({"created_slot": now, "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                   "plan": plan}, open(p("plan.json"), "w"), indent=1)
+                   "cluster": cluster, "plan": plan}, open(p("plan.json"), "w"), indent=1)
         for t in tg:
             first = wins[t["identity"]][0]
             print(f"{t['label']:<20} {t['identity'][:10]} v{t['version']:<14} stake={t['stake_sol']:>12,.0f} "
-                  f"next window in ~{(first - now) * 0.4 / 60:.1f} min ({len(wins[t['identity']])} windows in horizon)")
+                  f"next window in ~{(first - now) * probe.SLOT_TIME_S / 60:.1f} min "
+                  f"({len(wins[t['identity']])} windows in horizon)")
         if len(plan) < len(candidates):
             print(f"{len(candidates) - len(plan)} windows dropped by --min-gap-slots {a.min_gap_slots}")
+        by_label, by_target = {}, {}
+        for item in plan:
+            by_label[item["label"]] = by_label.get(item["label"], 0) + 1
+            by_target[item["target"]] = by_target.get(item["target"], 0) + 1
+        print("bursts per label: " + ", ".join(f"{k}={v}" for k, v in sorted(by_label.items())))
+        print("bursts per validator: " + ", ".join(
+            f"{k[:10]}={v}" for k, v in sorted(by_target.items(), key=lambda kv: -kv[1])))
+        print(f"plan covers {len(summary['targets'])} validators / {len(summary['labels'])} labels")
         print(f"{len(plan)} bursts planned -> {p('plan.json')}")
     elif a.cmd == "run":
         cluster = _checked_cluster(a, rpc, send_rpc)
@@ -212,6 +225,7 @@ def main():
                          run_id=time.strftime("%m%d%H%M"), fee_levels=[int(x) for x in a.fee_levels.split(",")],
                          cu_limit=a.cu_limit, lead_slots=a.lead_slots, send_mode=a.send_mode, gap_ms=a.gap_ms,
                          payer_arm=a.payer_arm, cluster=cluster)
+        ledger.snapshot(p("spend_ledger_snapshot.json"))
     elif a.cmd == "fund":
         cmd_fund(a, rpc, send_rpc)
     elif a.cmd == "balances":
@@ -222,8 +236,10 @@ def main():
         collect.collect(rpc, p("sent.csv"), p("landed.csv"), p("blocks.csv"), wait_sec=a.wait_sec)
     elif a.cmd == "verify-windows":
         rows = windows.verify_windows(rpc, p("plan.json"), p("sent.csv"), p("windows.csv"))
-        print(f"{len(rows)} windows -> {p('windows.csv')} "
-              f"({sum(1 for r in rows if r['leaders_ok'])} have the target for all 4 slots)")
+        verified = [r for r in rows if r["status"] == "verified"]
+        print(f"{len(rows)} windows -> {p('windows.csv')}: {len(verified)} verified "
+              f"({sum(1 for r in verified if r['leaders_ok'])} have the target for all 4 slots), "
+              f"{len(rows) - len(verified)} planned/not yet elapsed")
     elif a.cmd == "analyze":
         print(analyze.analyze(p("landed.csv"), p("results.csv"), sent_csv=p("sent.csv"),
                               blocks_csv=p("blocks.csv"), windows_csv=p("windows.csv"),

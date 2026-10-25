@@ -1,6 +1,9 @@
 # One command:  docker compose up        -> dry-run pipeline (inventory, plan, 3 dry bursts)
 # Live run:     OBP_ARGS="--live --cap-sol 0.04" docker compose up   (keys mounted read-only from ./keys)
 # Mainnet live: OBP_ARGS="--live --mainnet --cap-sol 0.04" docker compose up
+# OBP_RUN_ID names the session directory under data/runs/ (default: dryrun).
+# OBP_BURSTS sets the number of bursts (default: 3).
+# The spend ledger is global per cluster at /data/spend_ledger_<cluster>.json, shared across sessions.
 # Default payer paths: /keys/payer.json (same arm), plus /keys/payer2.json..payer5.json (multi arm).
 services:
   obp:
@@ -9,4 +12,4 @@ services:
     volumes:
       - ./data:/data
       - ./keys:/keys:ro
-    entrypoint: ["sh", "-c", "python -m obp inventory && python -m obp plan && python -m obp run --max-bursts ${OBP_BURSTS:-3} ${OBP_ARGS:-} && python -m obp collect && python -m obp verify-windows && python -m obp analyze"]
+    entrypoint: ["sh", "-c", "export OBP_DATA=/data/runs/${OBP_RUN_ID:-dryrun} OBP_LEDGER_DIR=/data && mkdir -p \"$OBP_DATA\" && python -m obp inventory && python -m obp plan && python -m obp run --max-bursts ${OBP_BURSTS:-3} ${OBP_ARGS:-} && python -m obp collect && python -m obp verify-windows && python -m obp analyze"]

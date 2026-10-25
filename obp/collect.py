@@ -6,9 +6,10 @@ from collections import defaultdict
 from .rpc import Rpc
 
 log = logging.getLogger("obp.collect")
-LANDED_FIELDS = ["signature", "run", "burst", "target", "label", "window_start", "send_seq", "order_mode",
-                 "payer_arm", "cu_price", "cluster", "landed", "slot", "slot_leader", "leader_is_target",
-                 "in_target_window", "block_index", "block_tx_count", "block_time", "our_tx_count", "err"]
+LANDED_FIELDS = ["signature", "run", "burst", "target", "label", "window_start", "send_seq", "send_rank",
+                 "order_mode", "payer_arm", "cu_price", "cluster", "send_result", "landed", "slot",
+                 "slot_leader", "leader_is_target", "in_target_window", "block_index", "block_tx_count",
+                 "block_time", "our_tx_count", "err"]
 BLOCK_FIELDS = ["slot", "block_time", "index", "signature", "fee", "cu_consumed", "num_sigs", "is_vote", "err"]
 
 
@@ -72,9 +73,12 @@ def _wait_for_newest_send(sent_rows, wait_sec):
 def collect(rpc: Rpc, sent_csv: str, landed_csv: str, blocks_csv: str, wait_sec: float = 0):
     sent_rows = list(csv.DictReader(open(sent_csv)))
     _wait_for_newest_send(sent_rows, wait_sec)
-    sent = [r for r in sent_rows if r["live"] == "True" and r["send_result"] == "ok"]
+    # Query every live row with a signature, whatever the send acknowledgement was. An RPC may
+    # report an error even though the transaction reached the leader, so dropping those signatures
+    # would silently lose data. send_result stays in landed.csv as the send acknowledgement.
+    sent = [r for r in sent_rows if r["live"] == "True" and r.get("signature")]
     if not sent:
-        log.warning("no live sends in %s (dry-run data has nothing to collect)", sent_csv)
+        log.warning("no live sends with signatures in %s (dry-run data has nothing to collect)", sent_csv)
         return []
     sent_sigs = {r["signature"] for r in sent}
     st = rpc.signature_statuses([r["signature"] for r in sent])

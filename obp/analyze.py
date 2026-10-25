@@ -1,8 +1,13 @@
 """Analyze ordering data.
 
-Per burst: rank correlation of block position vs fee and vs send order, with a permutation null.
-Only pairs of OUR transactions that landed in the SAME block are compared.
-Also: pooled per-label tests, landing/on-time rates, and a whole-block priority-fee check.
+Primary tests use only bursts where the landing slot was inside the planned window AND the actual
+leader was the planned target. A separate sensitivity table shows all landed rows regardless of
+leader/target. Only pairs of OUR transactions that landed in the SAME block are compared.
+
+The pre-registered primary test is pooled tau_fee per client label on the same-payer arm. Holm
+correction is applied to those per-label p-values. Everything else (multi-payer arm, per-burst,
+per-mode, whole-block) is exploratory.
+
 Whole-block priority fee per CU is an APPROXIMATION:
     (fee - 5000 * num_sigs) * 1e6 / cu_consumed
 It ignores exact per-instruction costs and any other fee components. It is labelled as an
@@ -108,8 +113,17 @@ def _md_table(headers, rows):
     return "\n".join(out)
 
 
-def _per_burst(landed_rows):
+def _send_rank(r):
+    v = r.get("send_rank")
+    if v not in (None, "", "None"):
+        return int(v)
+    return int(r["send_seq"])
+
+
+def _per_burst(landed_rows, require_target=True):
     rows = [r for r in landed_rows if _truth(r.get("landed")) and r.get("block_index") not in ("", "None", None)]
+    if require_target:
+        rows = [r for r in rows if _truth(r.get("in_target_window")) and _truth(r.get("leader_is_target"))]
     groups = defaultdict(list)
     for r in rows:
         groups[(r.get("run", ""), r.get("burst", ""), r.get("slot", ""))].append(r)
@@ -120,7 +134,7 @@ def _per_burst(landed_rows):
             continue
         idx = [int(r["block_index"]) for r in g]
         fee = [-int(r["cu_price"]) for r in g]  # negative: higher fee earlier -> positive tau
-        seq = [int(r["send_seq"]) for r in g]
+        seq = [_send_rank(r) for r in g]
         tf, ts = kendall(idx, fee), kendall(idx, seq)
         res.append({"run": g[0].get("run", ""), "burst": g[0].get("burst", ""), "slot": g[0].get("slot", ""),
                     "target": g[0].get("target", ""), "label": g[0].get("label", ""),
@@ -128,27 +142,89 @@ def _per_burst(landed_rows):
                     "n_same_block": len(g), "in_target_window": g[0].get("in_target_window", ""),
                     "tau_fee": tf, "p_fee": perm_p(idx, fee, tf, rnd=rnd),
                     "tau_send": ts, "p_send": perm_p(idx, seq, ts, rnd=rnd)})
-        bursts.append({"label": g[0].get("label", ""), "idx": idx, "fee": fee, "seq": seq, "tf": tf, "ts": ts})
+        bursts.append({"label": g[0].get("label", ""), "payer_arm": g[0].get("payer_arm", ""),
+                       "order_mode": g[0].get("order_mode", ""), "n": len(g),
+                       "idx": idx, "fee": fee, "seq": seq, "tf": tf, "ts": ts})
     return res, bursts
+
+
+def _summarize(bursts):
+    return {"bursts": len(bursts), "txs": sum(b.get("n", 0) for b in bursts),
+            "mean_tau_fee": _mean([b["tf"] for b in bursts]),
+            "mean_tau_send": _mean([b["ts"] for b in bursts]),
+            "p_fee": pooled_perm_p(bursts, "tf"), "p_send": pooled_perm_p(bursts, "ts")}
 
 
 def _pooled(bursts):
     by = defaultdict(list)
     for b in bursts:
         by[b["label"]].append(b)
+    return [{"label": label, **_summarize(g)} for label, g in sorted(by.items())]
+
+
+def _group_stats(bursts, key):
+    by = defaultdict(list)
+    for b in bursts:
+        by[b.get(key, "")].append(b)
+    return [{"group": group, **_summarize(g)} for group, g in sorted(by.items(), key=lambda kv: str(kv[0]))]
+
+
+def _grouped(bursts):
     out = []
-    for label, g in sorted(by.items()):
-        out.append({"label": label, "bursts": len(g),
-                    "mean_tau_fee": _mean([b["tf"] for b in g]),
-                    "mean_tau_send": _mean([b["ts"] for b in g]),
-                    "p_fee": pooled_perm_p(g, "tf"), "p_send": pooled_perm_p(g, "ts")})
+    for label in sorted({b["label"] for b in bursts}):
+        lb = [b for b in bursts if b["label"] == label]
+        for scope in ("payer_arm", "order_mode"):
+            for r in _group_stats(lb, scope):
+                out.append({"label": label, "group_by": scope, **r})
+    return out
+
+
+def _holm(pvalues: dict) -> dict:
+    items = sorted(((k, p) for k, p in pvalues.items() if p is not None), key=lambda kv: kv[1])
+    m, prev, out = len(items), 0.0, {}
+    for i, (label, p) in enumerate(items):
+        adj = min(1.0, max(prev, p * (m - i)))
+        out[label] = adj
+        prev = adj
+    return out
+
+
+def _pos_sig(g, value_key, p_key):
+    return bool(g) and g[value_key] is not None and g[value_key] > 0 and \
+        g[p_key] is not None and g[p_key] < 0.05
+
+
+def _verdicts(bursts):
+    labels = sorted({b["label"] for b in bursts})
+    primary = {label: _summarize([b for b in bursts
+                                  if b["label"] == label and b["payer_arm"] == "same"]) for label in labels}
+    holm = _holm({label: primary[label]["p_fee"] for label in labels})
+    out = []
+    for label in labels:
+        lb = [b for b in bursts if b["label"] == label]
+        modes = {r["group"]: r for r in _group_stats(lb, "order_mode")}
+        asc_shuffle = [b for b in lb if b["order_mode"] in ("asc", "shuffle")]
+        asc_stats = _summarize(asc_shuffle) if asc_shuffle else None
+        desc = modes.get("desc")
+        h1 = _pos_sig(desc, "mean_tau_fee", "p_fee") and _pos_sig(asc_stats, "mean_tau_fee", "p_fee")
+        h2 = (not h1) and any(_pos_sig(g, "mean_tau_send", "p_send") for g in (desc, asc_stats) if g)
+        verdict = "H1 fee rule" if h1 else ("H2 arrival rule" if h2 else "no rule detected (H0 not rejected)")
+        evidence = []
+        for name, g in (("desc", desc), ("asc/shuffle", asc_stats)):
+            if g:
+                evidence.append(f"{name}: tau_fee={_tau(g['mean_tau_fee'])} p={_fmt(g['p_fee'])} "
+                                f"tau_send={_tau(g['mean_tau_send'])} p={_fmt(g['p_send'])}")
+        out.append({"label": label, "bursts": primary[label]["bursts"], "txs": primary[label]["txs"],
+                    "tau_fee": primary[label]["mean_tau_fee"], "p_fee": primary[label]["p_fee"],
+                    "p_holm": holm.get(label), "verdict": verdict, "evidence": "; ".join(evidence)})
     return out
 
 
 def _landing(sent_rows, landed_sigs):
-    by_label = defaultdict(lambda: [0] * 7)
-    by_fee = defaultdict(lambda: [0] * 7)
-    # values: sent, live_sent, landed, on_time, in_window, send_offset_sum, send_offset_n
+    # values: total, live, landed, live_on_time, live_in_window, offset_sum, offset_n,
+    #         dry, dry_on_time, dry_in_window
+    by_label = defaultdict(lambda: [0] * 10)
+    by_fee = defaultdict(lambda: [0] * 10)
     for r in sent_rows:
         label = r.get("label") or "(unknown)"
         fee = _int(r.get("cu_price"))
@@ -158,32 +234,43 @@ def _landing(sent_rows, landed_sigs):
         landed = live and r.get("signature") in landed_sigs
         offset = _int(r.get("send_offset"))
         if offset is None:
-            at, ws = _int(r.get("slot_at_send")), _int(r.get("window_start"))
+            at = _int(r.get("est_slot_at_send"))
+            if at is None:
+                at = _int(r.get("slot_at_send"))
+            ws = _int(r.get("window_start"))
             offset = at - ws if at is not None and ws is not None else None
         for bucket, key in ((by_label, label), (by_fee, fee)):
             if key is None:
                 continue
             v = bucket[key]
             v[0] += 1
-            v[1] += int(live)
-            v[2] += int(landed)
-            v[3] += int(on_time)
-            v[4] += int(in_window)
-            if offset is not None:
-                v[5] += offset
-                v[6] += 1
+            if live:
+                v[1] += 1
+                v[2] += int(landed)
+                v[3] += int(on_time)
+                v[4] += int(in_window)
+                if offset is not None:
+                    v[5] += offset
+                    v[6] += 1
+            else:
+                v[7] += 1
+                v[8] += int(on_time)
+                v[9] += int(in_window)
     labels = []
     for label, v in sorted(by_label.items()):
         labels.append({"label": label, "sent": v[0], "live_sent": v[1], "landed": v[2],
                        "landing_rate": v[2] / v[1] if v[1] else None,
-                       "on_time": v[3], "on_time_rate": v[3] / v[0] if v[0] else None,
-                       "in_window": v[4], "in_window_rate": v[4] / v[0] if v[0] else None,
-                       "mean_send_offset": v[5] / v[6] if v[6] else None})
+                       "live_on_time": v[3], "on_time_rate": v[3] / v[1] if v[1] else None,
+                       "live_in_window": v[4], "in_window_rate": v[4] / v[1] if v[1] else None,
+                       "mean_send_offset": v[5] / v[6] if v[6] else None,
+                       "dry_sent": v[7], "dry_on_time": v[8],
+                       "dry_on_time_rate": v[8] / v[7] if v[7] else None,
+                       "dry_in_window": v[9], "dry_in_window_rate": v[9] / v[7] if v[7] else None})
     fees = []
     for fee, v in sorted(by_fee.items()):
         fees.append({"cu_price": fee, "sent": v[0], "live_sent": v[1], "landed": v[2],
                      "landing_rate": v[2] / v[1] if v[1] else None,
-                     "on_time": v[3], "on_time_rate": v[3] / v[0] if v[0] else None})
+                     "live_on_time": v[3], "on_time_rate": v[3] / v[1] if v[1] else None})
     return labels, fees
 
 
@@ -193,12 +280,14 @@ def _window_summary(rows):
         by_label[r.get("label") or "(unknown)"].append(r)
     out = []
     for label, g in sorted(by_label.items()):
+        verified = [r for r in g if r.get("status") in (None, "", "verified")]
         out.append({
             "label": label,
-            "windows": len(g),
-            "leaders_ok": sum(1 for r in g if _truth(r.get("leaders_ok"))),
-            "windows_with_blocks": sum(1 for r in g if (_int(r.get("block_count")) or 0) > 0),
-            "block_slots": sum(_int(r.get("block_count")) or 0 for r in g),
+            "windows": len(verified),
+            "leaders_ok": sum(1 for r in verified if _truth(r.get("leaders_ok"))),
+            "windows_with_blocks": sum(1 for r in verified if (_int(r.get("block_count")) or 0) > 0),
+            "block_slots": sum(_int(r.get("block_count")) or 0 for r in verified),
+            "planned": len(g) - len(verified),
         })
     return out
 
@@ -255,17 +344,28 @@ def analyze(landed_csv, out_csv, sent_csv=None, blocks_csv=None, md_path=None, w
     sent_rows = _read_csv(sent_csv)
     block_rows = _read_csv(blocks_csv)
     window_rows = _read_csv(windows_csv)
-    res, bursts = _per_burst(landed_rows)
+    res, bursts = _per_burst(landed_rows, require_target=True)
+    _all_res, all_bursts = _per_burst(landed_rows, require_target=False)
     with open(out_csv, "w", newline="") as f:
         fields = ["run", "burst", "slot", "target", "label", "order_mode", "payer_arm", "n_same_block",
                   "in_target_window", "tau_fee", "p_fee", "tau_send", "p_send"]
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader(); w.writerows(res)
 
+    grouped = _grouped(bursts)
+    group_csv = os.path.join(os.path.dirname(os.path.abspath(out_csv)) or ".", "results_by_group.csv")
+    with open(group_csv, "w", newline="") as f:
+        fields = ["label", "group_by", "group", "bursts", "txs", "mean_tau_fee", "p_fee",
+                  "mean_tau_send", "p_send"]
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader(); w.writerows(grouped)
+
     landed_sigs = {r.get("signature") for r in landed_rows if _truth(r.get("landed"))}
     landing_labels, landing_fees = _landing(sent_rows, landed_sigs)
     window_labels = _window_summary(window_rows)
     pooled = _pooled(bursts)
+    sensitivity = _pooled(all_bursts)
+    verdicts = _verdicts(bursts)
     per_slot, block_summary = _whole_block(block_rows, landed_rows)
 
     landed_true = sum(1 for r in landed_rows if _truth(r.get("landed")))
@@ -291,43 +391,88 @@ def analyze(landed_csv, out_csv, sent_csv=None, blocks_csv=None, md_path=None, w
         "Positive tau means higher fee (or earlier send order) appears earlier in the block.",
         "Permutation p-values use a two-sided null; small samples give weak evidence.",
         "",
-        "## Per-burst Kendall tau",
+        "## Test plan: primary vs exploratory",
+        "",
+        "**Pre-registered primary test:** pooled `tau_fee` per client label on the **same-payer** arm, "
+        "using only rows with `in_target_window=True` and `leader_is_target=True`. Holm correction is "
+        "applied across the per-label primary p-values below.",
+        "",
+        "Everything else (multi-payer arm, per-burst, per-mode/rotation, whole-block, landing rates) is "
+        "**exploratory**. Groups with fewer than 3 of our transactions in the same block are dropped. "
+        "With a five-transaction burst the smallest attainable two-sided per-burst permutation p is "
+        "1/60 ≈ 0.017; pooled tests use 2000 permutations, so their floor is 0.0005.",
+        "",
+        "## Verdict per label (H1 / H2 / H0)",
+        "",
+        "H1 = pooled tau_fee > 0 with p < 0.05 in both the descending and ascending/shuffled groups. "
+        "H2 = tau_send > 0 with p < 0.05 while the fee pattern is not consistent across modes. "
+        "Otherwise the verdict is H0 (no rule detected).",
+        "",
+        _md_table(["label", "primary bursts", "primary txs", "tau_fee (same arm)", "p_fee",
+                   "Holm p", "verdict", "mode evidence"],
+                  [[r["label"], r["bursts"], r["txs"], _tau(r["tau_fee"]), _fmt(r["p_fee"]),
+                    _fmt(r["p_holm"]), r["verdict"], r["evidence"]] for r in verdicts])
+        if verdicts else "_No same-block groups with >=3 target-window txs._",
+        "",
+        "## Per-burst Kendall tau (primary: target window and target leader)",
         "",
         _md_table(["label", "target", "arm", "slot", "n", "tau_fee", "p_fee", "tau_send", "p_send"],
                   [[r["label"], r["target"][:8], r["payer_arm"], r["slot"], r["n_same_block"],
                     _tau(r["tau_fee"]), r["p_fee"], _tau(r["tau_send"]), r["p_send"]] for r in res]) if res else "_No same-block groups with >=3 of our txs._",
         "",
-        "## Pooled per client label",
+        "## Pooled per client label (primary: target window and target leader)",
         "",
-        _md_table(["label", "bursts", "mean tau_fee", "mean tau_send", "pooled p_fee", "pooled p_send"],
-                  [[r["label"], r["bursts"], _tau(r["mean_tau_fee"]), _tau(r["mean_tau_send"]),
+        _md_table(["label", "bursts", "txs", "mean tau_fee", "mean tau_send", "pooled p_fee", "pooled p_send"],
+                  [[r["label"], r["bursts"], r["txs"], _tau(r["mean_tau_fee"]), _tau(r["mean_tau_send"]),
                     r["p_fee"], r["p_send"]] for r in pooled]) if pooled else "_No pooled data._",
+        "",
+        "## Grouped results by payer arm and order mode (exploratory)",
+        "",
+        _md_table(["label", "grouped by", "group", "bursts", "txs", "mean tau_fee", "pooled p_fee",
+                   "mean tau_send", "pooled p_send"],
+                  [[r["label"], r["group_by"], r["group"], r["bursts"], r["txs"], _tau(r["mean_tau_fee"]),
+                    r["p_fee"], _tau(r["mean_tau_send"]), r["p_send"]] for r in grouped])
+        if grouped else "_No grouped data._",
+        "",
+        "## Sensitivity: all landed (any leader)",
+        "",
+        "Same statistic as the primary pooled table, but using every landed row regardless of "
+        "`in_target_window` or `leader_is_target`. This is exploratory and shows how much the result "
+        "depends on the leader filter.",
+        "",
+        _md_table(["label", "bursts", "txs", "mean tau_fee", "mean tau_send", "pooled p_fee", "pooled p_send"],
+                  [[r["label"], r["bursts"], r["txs"], _tau(r["mean_tau_fee"]), _tau(r["mean_tau_send"]),
+                    r["p_fee"], r["p_send"]] for r in sensitivity]) if sensitivity else "_No landed data._",
         "",
         "## Landing and timing",
         "",
-        "`on_time` means `slot_at_send < window_start`; `in_window_at_send` means "
-        "`slot_at_send < window_start + 4`. Both rates include dry-run rows.",
+        "Live timing uses live-only denominators. Dry-run timing is shown in separate columns so it "
+        "cannot inflate a live rate. `on_time` means the per-tx estimated send slot was before "
+        "`window_start`; `in_window_at_send` means it was before `window_start + 4`.",
         "",
-        _md_table(["label", "sent", "live_sent", "landed", "landing rate", "on_time", "on_time rate",
-                   "in_window_at_send", "in_window rate", "mean send_offset"],
-                  [[r["label"], r["sent"], r["live_sent"], r["landed"], r["landing_rate"], r["on_time"],
-                    r["on_time_rate"], r["in_window"], r["in_window_rate"], r["mean_send_offset"]]
-                   for r in landing_labels]) if landing_labels else "_No sent rows._",
+        _md_table(["label", "sent", "live sent", "landed", "landing rate", "live on_time", "on_time rate",
+                   "live in_window", "in_window rate", "mean live send_offset", "dry sent", "dry on_time",
+                   "dry on_time rate", "dry in_window", "dry in_window rate"],
+                  [[r["label"], r["sent"], r["live_sent"], r["landed"], r["landing_rate"], r["live_on_time"],
+                    r["on_time_rate"], r["live_in_window"], r["in_window_rate"], r["mean_send_offset"],
+                    r["dry_sent"], r["dry_on_time"], r["dry_on_time_rate"], r["dry_in_window"],
+                    r["dry_in_window_rate"]] for r in landing_labels]) if landing_labels else "_No sent rows._",
         "",
-        "### Landing by fee level",
+        "### Landing by fee level (live only)",
         "",
-        _md_table(["cu_price (micro/CU)", "sent", "live_sent", "landed", "landing rate", "on_time", "on_time rate"],
-                  [[r["cu_price"], r["sent"], r["live_sent"], r["landed"], r["landing_rate"], r["on_time"],
+        _md_table(["cu_price (micro/CU)", "live sent", "landed", "landing rate", "live on_time", "on_time rate"],
+                  [[r["cu_price"], r["live_sent"], r["landed"], r["landing_rate"], r["live_on_time"],
                     r["on_time_rate"]] for r in landing_fees]) if landing_fees else "_No fee data._",
         "",
         "## Verified leader windows",
         "",
+        "Only windows whose `window_end` is before the current finalized slot count as verified. "
         "`leaders_ok` = the target held all 4 slots; `block_slots` = slots in those windows that "
-        "actually produced a block. Works on dry-run data because it needs no signatures.",
+        "actually produced a block; `planned` = not yet elapsed, not counted as verified.",
         "",
-        _md_table(["label", "windows", "leaders_ok", "windows with blocks", "block_slots"],
-                  [[r["label"], r["windows"], r["leaders_ok"], r["windows_with_blocks"], r["block_slots"]]
-                   for r in window_labels]) if window_labels else "_No windows.csv data._",
+        _md_table(["label", "windows", "leaders_ok", "windows with blocks", "block_slots", "planned"],
+                  [[r["label"], r["windows"], r["leaders_ok"], r["windows_with_blocks"], r["block_slots"],
+                    r["planned"]] for r in window_labels]) if window_labels else "_No windows.csv data._",
         "",
         "## Whole-block priority ordering (APPROXIMATION)",
         "",

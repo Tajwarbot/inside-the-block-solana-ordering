@@ -13,8 +13,9 @@ MEMO_PROGRAM = Pubkey.from_string("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
 
 
 def memo_tag(run, burst, seq, cu_price, send_order):
-    # Kept SHORT on purpose: SPL Memo costs ~14.6k CU + ~380 CU per byte (measured with
-    # simulateTransaction on mainnet, 2026-10-25), and the priority fee is charged on the CU *limit*.
+    # Kept SHORT and intentionally NON-UNIQUE: SPL Memo costs ~14.6k CU + ~380 CU per byte
+    # (measured with simulateTransaction on mainnet, 2026-10-25), and the priority fee is charged
+    # on the CU *limit*. Tags can repeat across runs; the transaction signature is the unique key.
     # Full metadata (run, fee, send order) lives in sent.csv keyed by signature.
     return f"o{burst}.{seq}"
 

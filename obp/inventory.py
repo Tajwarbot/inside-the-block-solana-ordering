@@ -4,6 +4,8 @@ from .rpc import Rpc
 
 log = logging.getLogger("obp.inventory")
 JITO_API = "https://kobe.mainnet.jito.network/api/v1/validators"
+INVENTORY_FIELDS = ["identity", "vote", "stake_sol", "client_id", "version", "label",
+                    "running_jito", "running_bam", "tpu_quic"]
 
 
 def client_label(node: dict, jito: dict | None) -> str:
@@ -27,6 +29,8 @@ def build(rpc: Rpc, out_csv: str) -> list[dict]:
     for v in va["current"]:
         stake_by_node[v["nodePubkey"]] = stake_by_node.get(v["nodePubkey"], 0) + v["activatedStake"]
         vote_by_node[v["nodePubkey"]] = v["votePubkey"]
+    if not stake_by_node:
+        raise SystemExit("no active validators returned by getVoteAccounts; check RPC_URL")
     jito_by_vote = {}
     try:
         for j in requests.get(JITO_API, timeout=30).json().get("validators", []):
@@ -45,7 +49,7 @@ def build(rpc: Rpc, out_csv: str) -> list[dict]:
         })
     rows.sort(key=lambda r: -r["stake_sol"])
     with open(out_csv, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w = csv.DictWriter(f, fieldnames=INVENTORY_FIELDS)
         w.writeheader(); w.writerows(rows)
     return rows
 

@@ -49,10 +49,11 @@ Sending setup:
 | Fee ladder (micro-lamports/CU) | 0, 1,000, 10,000, 100,000, 1,000,000 |
 | Rotations | ascending, descending, shuffled, rotating by burst |
 | Payer arms | same payer (account-lock conflict) and multi payer (parallel) |
-| Lead slots | [FILL: LEAD SLOTS PENDING, default 2] |
+| Lead slots | [FILL: LEAD SLOTS PENDING, default 3; blockhash/signing prepared 6 slots earlier] |
 | Send path | [FILL: RPC_URL / SEND_RPC_URL PENDING] |
 | `skipPreflight` / `maxRetries` | true / 0 |
 | Spend ledger | [FILL: FINAL RESERVED LAMPORTS PENDING] of `[FILL: CAP PENDING]` |
+| Ledger location | Global per cluster at `$OBP_LEDGER_DIR/spend_ledger_<cluster>.json` (default parent `data` root, `/data` in Docker); session copy in `spend_ledger_snapshot.json` |
 
 ## Method summary
 
@@ -67,10 +68,17 @@ The sender prebuilds and signs the burst, waits until the lead slot and sends wi
 window. `collect` records the landing slot, actual leader, ledger index and every transaction in
 the landing block.
 
-The primary statistic is Kendall tau of ledger index against fee, and against send sequence,
-within bursts that landed at least three transactions in the same block. Permutation p-values are
-reported per burst and pooled per client label. The whole-block check is supplementary and uses
-an approximate priority fee per CU.
+The primary statistic is Kendall tau of ledger index against fee, and against actual send order,
+within bursts that landed at least three transactions in the same block. Primary tests keep only
+rows whose landing slot was inside the planned window and whose actual leader was the planned
+target. Permutation p-values are reported per burst and pooled per client label. The whole-block
+check is supplementary and uses an approximate priority fee per CU.
+
+The pre-registered primary test is pooled `tau_fee` per client label on the same-payer arm, with
+Holm correction across labels. All other cuts are exploratory. The per-label verdict rule is:
+H1 if pooled `tau_fee > 0` with pooled `p < 0.05` in both the descending and ascending/shuffled
+groups; H2 if `tau_send > 0` with `p < 0.05` while the fee pattern is not consistent across modes;
+otherwise "no rule detected (H0 not rejected)".
 
 ## Results
 
@@ -156,27 +164,32 @@ Overall conclusion: [RESULT PENDING: live run].
 
 `tau_fee` is Kendall tau of block index against fee, with the sign chosen so that a positive value
 means higher fee appears earlier in the block. `tau_send` is Kendall tau of block index against
-send sequence, with a positive value meaning an earlier send appears earlier. Values range from
+actual send order (`send_rank`, derived from `send_ts_ns`), with a positive value meaning an earlier
+send appears earlier. Values range from
 -1 to +1. Zero means no monotonic relation.
 
-- H1 (fee rule): `tau_fee` stays positive across ascending, descending and shuffled rotations,
-  and across both payer arms. The pooled p-value is small. `tau_send` may be positive in the
-  ascending rotation by construction, but it should not stay positive under descending and
-  shuffled rotations.
-- H2 (arrival rule): `tau_send` stays positive under all rotations, while `tau_fee` changes sign
-  or loses significance when the rotation changes.
+- H1 (fee rule): pooled `tau_fee` is positive with pooled `p < 0.05` in both the descending and
+  ascending/shuffled groups. `tau_send` may be positive in the ascending rotation by
+  construction, but it should not stay positive under descending and shuffled rotations.
+- H2 (arrival rule): `tau_send` is positive with `p < 0.05` under descending and/or
+  ascending/shuffled modes, while `tau_fee` is not consistent across modes (so H1 does not hold).
 - H0 (noise): signs and magnitudes vary without a stable pattern, pooled p-values are not small,
   or the number of same-block groups is too small to decide.
 
-Read per-burst p-values with care. A five-transaction burst has only 120 possible orders, so the
-smallest two-sided permutation p-value is about 0.017. A single significant burst is weak
-evidence. Pooled results over many bursts are the main evidence. Report the number of
+The pre-registered primary test is pooled `tau_fee` per label on the same-payer arm; Holm
+correction is applied across the per-label primary p-values. Per-burst, per-mode, multi-payer and
+whole-block results are exploratory and are labelled as such in `results.md`.
+
+Read per-burst p-values with care. Groups with fewer than three of our transactions in the same
+block are dropped. A five-transaction burst has only 120 possible orders, so the smallest
+attainable two-sided per-burst permutation p-value is about 0.017. Pooled tests use 2000
+permutations, so their floor is 0.0005. A single significant burst is weak evidence; pooled
+results over many bursts are the main evidence. Report the number of bursts, transactions and
 same-block groups next to every tau so the reader can judge sample size.
 
 ## Pre-live checks already done
 
-All work in this section was read-only on 2026-10-25 between 15:00 and 15:30 UTC. No live
-transactions were sent.
+All work in this section was read-only on 2026-10-25. No live transactions were sent.
 
 1. **Mainnet dry run and leader-window verification.** A 16-minute mainnet dry run with no sends
    covered 13 validators across 8 client labels: AgaveBam, JitoLabs, HarmonicAgave,
@@ -184,11 +197,15 @@ transactions were sent.
    `verify-windows` confirmed that the scheduled target led all four slots in 109/109 windows, and
    all 436 window slots produced blocks.
 
-2. **Send timing under the old design.** With the old timing (lead of 1 slot and an extra
-   `getSlot` before sending), only 51 of 107 bursts were on time, meaning the send slot was before
-   the window start. The send-offset distribution was: -1: 51, 0: 42, 1: 11, 2: 1, 3: 2. This
-   led to the timing change: prebuild the transactions before the final wait, and use a lead of
-   2 slots. [SECOND DRY-RUN RESULT PENDING]
+2. **Send timing in the current design.** Mainnet slot time is now about **0.212 s** post
+   Alpenglow, so a 4-slot leader window is only about **0.85 s**. The second mainnet dry run used
+   a 2-slot lead and prebuilt transactions. It planned 142 bursts: **126/142 were on time** and
+   **142/142 were still inside the window at send**. The send-offset distribution was
+   **-2: 77, -1: 49, 0: 8, 1: 6, 2: 2**. The 16 late bursts (offset 0 or later) are the residual
+   timing limitation. After that run, timing was tightened further: default lead raised from 2 to
+   3 slots, polling reduced to 0.05 s inside the last six slots, far sleeps made conservative for
+   0.212 s slots, and a final guard skips a burst if the wait already reached its window start.
+   Each transaction now also records an estimated send slot from its own send timestamp.
 
 3. **Localnet end-to-end.** Against `solana-test-validator` 4.3.2, 5 of 5 memo transactions
    landed in one block. The full pipeline (`collect`, `verify-windows`, `analyze`) ran
@@ -202,8 +219,12 @@ transactions were sent.
 
 - The public devnet faucet was unreachable or rate-limited, so localnet was used for the
   end-to-end pipeline test instead of devnet.
-- The old timing produced only 51/107 on-time bursts (about 48%). This was fixed with prebuilt
-  transactions and a two-slot lead before the live runs.
+- The old timing produced only 51/107 on-time bursts (about 48%). Prebuilding the transactions
+  and raising the lead fixed most of it, but the second mainnet dry run still had **16/142 late
+  bursts** (offset 0 or later; distribution -2: 77, -1: 49, 0: 8, 1: 6, 2: 2). Timing was
+  tightened again after that run (lead 3, 0.05 s polling near the window, conservative far sleeps,
+  final window-start guard), but late sends remain a residual limitation because the public RPC
+  and network path add unmeasured jitter.
 - The payer accounts are unstaked, so SWQoS may allow only a small share of sends to land,
   especially at low fees. Landing rates are reported as a result rather than treated as a bug.
 - [ADD LIVE-RUN ISSUES] [FILL PENDING: replace with issues observed during the live runs]
@@ -232,7 +253,9 @@ transactions were sent.
 - Derived results: `[FILL: PATH TO results.csv PENDING]`, `[FILL: PATH TO results.md PENDING]`
 - Signature list for independent checking: the `signature` column of `sent.csv`, also listed in
   `[FILL: PATH TO SIGNATURE LIST PENDING]`
-- Spend ledger: `[FILL: PATH TO spend_ledger_mainnet.json PENDING]`
+- Spend ledger (global per cluster): `[FILL: PATH TO spend_ledger_mainnet.json PENDING]`, normally
+  `data/spend_ledger_mainnet.json` or `$OBP_LEDGER_DIR/spend_ledger_mainnet.json`; each session also
+  commits `spend_ledger_snapshot.json`
 
 `analyze` reproduces `results.csv` and `results.md` from the committed CSVs without network
 access. `collect` is idempotent and does not refetch slots already present in `blocks.csv`.

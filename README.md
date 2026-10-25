@@ -3,7 +3,8 @@
 `obp` measures how Solana leaders order our own transactions inside a block. It sends small
 memo-only transactions into planned 4-slot leader windows, records where they land, and reports
 rank correlations between block position and priority fee, and between block position and send
-order.
+order. Post-Alpenglow mainnet slot time is about **0.212 s**, so a 4-slot leader window is about
+**0.85 s**.
 
 The default mode is dry run. Nothing is sent unless `run` or `fund` receives `--live`; mainnet
 also requires `--mainnet`. The spend cap is hard-coded at 0.05 SOL.
@@ -23,8 +24,9 @@ For every burst the tool records:
 - every transaction in each block we hit, for a whole-block supplementary check.
 
 The main statistics are Kendall tau of block index against fee and of block index against send
-sequence, each with a permutation p-value. Only transactions from the same burst that landed in
-the same block are compared.
+order, each with a permutation p-value. Only transactions from the same burst that landed in the
+same block are compared. Primary statistics keep only rows with `in_target_window=True` and
+`leader_is_target=True`; a separate sensitivity table shows all landed rows regardless of leader.
 
 ## Design and why
 
@@ -53,22 +55,32 @@ limit, not on CU actually consumed, so the worst-case fee is known before sendin
 
 ### Window targeting with lead slots
 
-A leader normally holds four consecutive slots. The planner reads the epoch leader schedule and
-chooses future windows for validators of the selected client labels. The sender prebuilds and
-signs the whole burst, waits until `window_start - lead_slots`, then sends. The default lead is
-two slots. Each row records `slot_at_send`, `send_offset` (send slot minus window start) and
-`on_time` (`slot_at_send < window_start`).
+A leader normally holds four consecutive slots (about 0.85 s at 0.212 s/slot). The planner reads
+the epoch leader schedule and chooses future windows for validators of the selected client labels.
+The sender fetches the blockhash and prebuilds/signs the whole burst at
+`window_start - lead_slots - 6` or earlier, then waits until `window_start - lead_slots` and sends.
+The default lead is three slots. Slot polling is every 0.05 s inside the last six slots and uses a
+conservative far-sleep that stays six slots short, so it does not overshoot the short post-Alpenglow
+slots. If the final wait returns a slot at or after `window_start`, the burst is skipped before any
+fee is reserved.
+
+Each row keeps the burst-level `slot_at_send`/`slot_after_send` and also records a per-transaction
+`est_slot_at_send` = `slot_at_send + floor((send_ts_ns - t_wait_return_ns) / 0.212)`. The per-tx
+`send_offset`, `in_window_at_send` and `on_time` are based on that estimate, so a burst that spans
+more than one slot is not mislabelled.
 
 The scheduler is not perfectly predictable from the schedule alone, so a separate step confirms
 what actually happened.
 
 ### verify-windows
 
-`verify-windows` queries `getSlotLeaders` and `getBlocks` for each planned window. It records
-whether the target identity led all four slots and which slots in the window produced a block.
-It works on dry-run data because it needs no signatures. Transactions that landed under a
-different leader are marked `leader_is_target=False` and `in_target_window=False`, and are kept
-out of the target-window comparison.
+`verify-windows` queries `getSlotLeaders` and `getBlocks` for each planned window. A window counts
+as **verified** only when its `window_end` is before the current finalized slot; later windows are
+written with `status=planned` and counted separately as "planned (not yet elapsed)". It records
+whether the target identity led all four slots and which slots produced a block. It works on
+dry-run data because it needs no signatures. Transactions that landed under a different leader are
+marked `leader_is_target=False` and `in_target_window=False`, and are kept out of the primary
+target-window comparison (they still appear in the sensitivity table).
 
 ### Whole-block supplementary check
 
@@ -121,17 +133,34 @@ transactions we sent ourselves.
 
 ### Send order
 
-`send_seq` is the position in the burst. The sender is sequential by default (`--send-mode seq`,
-20 ms gap), and can run the sends in parallel (`--send-mode parallel`) for a separate comparison.
+`send_seq` is the planned position in the burst. The sender is sequential by default
+(`--send-mode seq`, 20 ms gap), and can run the sends in parallel (`--send-mode parallel`) for a
+separate comparison. The actual order is recorded as `send_rank`, derived by sorting
+`send_ts_ns`, and `tau_send` uses `send_rank` (falling back to `send_seq` only for older files).
 Because ascending, descending and shuffled rotations repeat across bursts, a stable relationship
-between `send_seq` and block index is distinguishable from a fee relationship.
+between actual send order and block index is distinguishable from a fee relationship.
 
 ### Noise versus rule
 
 The tool reports tau, permutation p-values, pooled per-label results and landing/timing counts.
 Small samples are expected. A single burst is not treated as evidence. The report keeps a valid
-"no rule" outcome (H0) instead of forcing a fee or arrival story. Dry-run timing rates, verified
-windows and landing rates are reported separately from the ordering tests.
+"no rule" outcome (H0) instead of forcing a fee or arrival story.
+
+The **pre-registered primary test** is pooled `tau_fee` per client label on the **same-payer** arm,
+using only target-window rows with the planned leader. Holm correction is applied across the
+per-label primary p-values. Everything else (multi-payer arm, per-burst, per-mode, whole-block,
+landing rates) is exploratory and is marked that way in `results.md`.
+
+The explicit verdict rule per label is:
+
+- **H1 (fee rule):** pooled `tau_fee > 0` with pooled `p < 0.05` in both the descending and the
+  ascending/shuffled groups.
+- **H2 (arrival rule):** `tau_send > 0` with `p < 0.05` while the fee pattern is not consistent
+  across modes.
+- **H0:** otherwise, reported as "no rule detected (H0 not rejected)".
+
+Dry-run timing rates, verified windows and landing rates are reported separately from the ordering
+tests. Landing rates use live-only denominators, with dry-run timing shown in its own columns.
 
 ## What this does not separate
 
@@ -160,19 +189,32 @@ The Compose entrypoint runs `inventory`, `plan`, three dry-run bursts, `collect`
 `verify-windows` and `analyze`. Dry-run transactions are built and signed with a throwaway
 in-memory key and never sent.
 
+The entrypoint always writes the session under `data/runs/<id>` and sets the global ledger root:
+
+```sh
+export OBP_DATA=/data/runs/${OBP_RUN_ID:-dryrun}
+export OBP_LEDGER_DIR=/data
+```
+
 Useful overrides:
 
 ```bash
-# More dry-run bursts
+# More dry-run bursts in the default dryrun session
 OBP_BURSTS=10 docker compose up
 
-# A timestamped session directory (create it on the host first)
-mkdir -p data/runs/20261028_pilot
-docker compose run --rm -e OBP_DATA=/data/runs/20261028_pilot obp
+# A named session directory under data/runs/
+OBP_RUN_ID=20261028_pilot docker compose up
 
 # Live mainnet (explicit opt-in, keys mounted read-only from ./keys)
-OBP_ARGS="--live --mainnet --cap-sol 0.04" docker compose up
+OBP_RUN_ID=20261028_pilot OBP_ARGS="--live --mainnet --cap-sol 0.04" docker compose up
+
+# Run a single command in an explicit session directory
+docker compose run --rm -e OBP_DATA=/data/runs/20261028_pilot obp analyze
 ```
+
+`$OBP_LEDGER_DIR` defaults to the parent `data` root (in Docker, `/data`), so all sessions share
+one per-cluster spend ledger. Each session also writes `spend_ledger_snapshot.json` at the end so
+the state is committed with the run.
 
 ### Plain Python environment
 
@@ -210,13 +252,18 @@ is set. For a real measurement campaign, set a fresh `OBP_DATA=data/runs/<YYYYMM
 every session so the data is timestamped and committed. `data/runs/` is not git-ignored; other
 directories under `data/` are.
 
-Payer keys for a live run:
+Payer keys for a live run. Live commands must write to a named directory under `data/runs/<id>`:
 
 ```bash
-export OBP_KEYPAIRS=/absolute/path/payer.json,/absolute/path/payer2.json,/absolute/path/payer3.json
+export OBP_KEYPAIRS=/absolute/path/payer.json,/absolute/path/payer2.json,/absolute/path/payer3.json,/absolute/path/payer4.json,/absolute/path/payer5.json
+export OBP_DATA=data/runs/20261028_pilot
+mkdir -p "$OBP_DATA"
 .venv/bin/python -m obp balances
 .venv/bin/python -m obp run --live --mainnet --cap-sol 0.04 --payer-arm same
+.venv/bin/python -m obp collect && .venv/bin/python -m obp verify-windows && .venv/bin/python -m obp analyze
 ```
+
+The multi-payer arm needs at least one distinct payer per fee level (five by default).
 
 With Docker, keys are read from the read-only `./keys` volume. The default paths are
 `/keys/payer.json` for the same-payer arm and `/keys/payer.json` plus `/keys/payer2.json` through
@@ -243,8 +290,8 @@ per client label. No flags. Read-only.
 
 ```bash
 python -m obp plan [--per-label N] [--windows N] [--horizon SLOTS] [--labels LIST]
-                   [--min-labels N] [--min-windows N] [--min-lead-slots N]
-                   [--min-gap-slots N]
+                   [--min-labels N] [--min-validators N] [--min-windows N]
+                   [--min-lead-slots N] [--min-gap-slots N]
 ```
 
 | Flag | Default | Meaning |
@@ -253,12 +300,15 @@ python -m obp plan [--per-label N] [--windows N] [--horizon SLOTS] [--labels LIS
 | `--windows` | `4` | Maximum windows to plan per selected validator. |
 | `--horizon` | `20000` | Only plan windows within this many slots. |
 | `--labels` | empty | Comma list restricting client labels. Empty means all labels with enough windows. |
-| `--min-labels` | `3` | Abort if fewer than this many distinct labels can be selected. |
+| `--min-labels` | `3` | Abort if fewer than this many distinct labels remain after gap filtering. |
+| `--min-validators` | `6` | Abort if fewer than this many distinct targets remain after gap filtering. |
 | `--min-windows` | `3` | A validator must have at least this many windows in the horizon to be eligible. |
 | `--min-lead-slots` | `25` | Only plan windows starting at least this many slots after the current slot. |
-| `--min-gap-slots` | `12` | Never plan two windows, for any targets, that start less than this many slots apart. The earliest is kept. |
+| `--min-gap-slots` | `12` | Never plan two windows, for any targets, that start less than this many slots apart. Per-target round-robin picks who gets the slot. |
 
-Writes `plan.json` and prints the selected validators and planned burst count.
+Writes `plan.json` and prints the selected validators, per-label/per-validator burst counts and
+the planned burst count. The global `--min-gap-slots` filter runs per target in round-robin order,
+so a target with dense windows cannot starve the other labels.
 
 ### calibrate
 
@@ -267,7 +317,9 @@ python -m obp calibrate --sim-payer PUBKEY
 ```
 
 Runs `simulateTransaction` (free, no signature verification) with an SPL Memo and prints the CU
-consumed. `PUBKEY` can be any existing funded account. Read-only.
+consumed. `PUBKEY` can be any existing funded account. Read-only. Memo tags are intentionally
+non-unique and short because SPL Memo costs roughly 380 CU per byte; the signature is the unique
+key for all metadata.
 
 ### balances
 
@@ -303,14 +355,17 @@ python -m obp run [--live] [--mainnet] [--cap-sol SOL] [--fee-levels LIST]
 | `--cap-sol` | `0.04` | Spend cap for this run. Cannot exceed 0.05 SOL. |
 | `--fee-levels` | `0,1000,10000,100000,1000000` | Priority fees in micro-lamports per CU. |
 | `--cu-limit` | `OBP_CU_LIMIT` or `21000` | Compute-unit limit for every probe transaction. |
-| `--lead-slots` | `2` | Send this many slots before the target window starts. |
+| `--lead-slots` | `3` | Send this many slots before the target window starts. The blockhash and signatures are prepared six slots earlier still. |
 | `--send-mode` | `seq` | Send the burst sequentially or with one thread per transaction. |
 | `--gap-ms` | `20` | Sleep between sends in sequential mode. |
 | `--payer-arm` | `same` | One fee payer (lock conflict) or multiple payers (parallel). |
 | `--max-bursts` | `0` | Limit to the earliest N planned bursts. `0` means all. |
 
-Reads `plan.json`, appends to `sent.csv`, writes `run_meta.json`, and updates the per-cluster
-spend ledger before each send. Dry-run rows are written with `live=False`.
+Reads `plan.json`, appends to `sent.csv`, writes `run_meta.json`, and reserves the per-transaction
+worst-case fee in the global per-cluster spend ledger immediately before each send. A burst whose
+final wait is already at/after the window start is skipped without reserving. Dry-run rows are
+written with `live=False`. Multi-payer live mode rejects fewer than one distinct payer per fee
+level and records `n_unique_payers` per burst.
 
 ### collect
 
@@ -322,8 +377,10 @@ python -m obp collect [--wait-sec N]
 |---|---|---|
 | `--wait-sec` | `20` | If the newest send is younger than this, sleep the remainder before checking statuses. |
 
-Reads `sent.csv`, queries `getSignatureStatuses`, fetches blocks for newly landed slots and writes
-`landed.csv` and `blocks.csv`. Re-running is idempotent: slots already present in `blocks.csv` are
+Reads `sent.csv`, queries `getSignatureStatuses` for **every live row with a signature** regardless
+of `send_result` (an RPC error does not prove the transaction was not forwarded), fetches blocks for
+newly landed slots and writes `landed.csv` and `blocks.csv`. `send_result` is kept in `landed.csv`
+as the send acknowledgement. Re-running is idempotent: slots already present in `blocks.csv` are
 not fetched or duplicated, and `landed.csv` is rewritten from the same sent rows.
 
 ### verify-windows
@@ -342,8 +399,11 @@ slots produced blocks. Works on dry-run data. Read-only.
 python -m obp analyze
 ```
 
-Reads `sent.csv`, `landed.csv`, `blocks.csv` and `windows.csv`, then writes `results.csv` and
-`results.md`. No flags. It is fully offline when those CSVs already exist.
+Reads `sent.csv`, `landed.csv`, `blocks.csv` and `windows.csv`, then writes `results.csv`,
+`results_by_group.csv` and `results.md`. No flags. It is fully offline when those CSVs already
+exist. Primary stats use only target-window rows with the planned leader; `results.md` also has the
+all-landed sensitivity table, the H1/H2/H0 verdict table, grouped results by payer arm and order
+mode, Holm-corrected primary p-values, and planned-versus-verified window counts.
 
 ## Safety and spend control
 
@@ -351,9 +411,13 @@ Reads `sent.csv`, `landed.csv`, `blocks.csv` and `windows.csv`, then writes `res
   throwaway in-memory key that is never funded and never saved.
 - Live requires `--live`. On mainnet it also requires `--mainnet`. The cluster is identified from
   the genesis hash; `RPC_URL` and `SEND_RPC_URL` must report the same cluster.
-- The spend ledger is persistent and split by cluster (`spend_ledger_mainnet.json`,
-  `spend_ledger_localnet.json`, and so on). Reservations are never released, including for
-  transactions that do not land.
+- The spend ledger is persistent, split by cluster (`spend_ledger_mainnet.json`,
+  `spend_ledger_localnet.json`, and so on) and **global across sessions**. It lives in
+  `$OBP_LEDGER_DIR` (default: the parent `data` root; `/data` in Docker), not in the per-session
+  directory. Read-modify-write is guarded by an OS `fcntl.flock` on a `.lock` file and re-reads the
+  file inside the lock, so concurrent sessions cannot jointly exceed the cap. Reservations are
+  never released, including for transactions that do not land. Each session writes
+  `spend_ledger_snapshot.json` at the end for the commit.
 - The absolute ceiling is 0.05 SOL (50,000,000 lamports). No CLI flag or environment variable can
   raise it.
 - Every probe is memo-only. It never touches another user's account, never front-runs and never
@@ -383,11 +447,12 @@ Worst case per burst: 5 x 5,000 base + 23,331 priority = **48,331 lamports**.
 | Pilot, 10 bursts | 50 | ~0.0005 |
 | Main run, 720 txs (12 validators x 6 bursts x 2 arms) | 720 | ~0.0070 |
 | Repeat day, half size | 360 | ~0.0035 |
-| Funding three extra payer keys | 3 | ~0.00002 |
+| Funding four extra payer keys | 4 | ~0.00002 |
 | **Total fees burned** | | **~0.011** |
 
-The first funding of four payer accounts also needs rent-exempt deposits of about 0.0036 SOL.
-That is not burned; it is refundable when the accounts are emptied.
+The multi-payer arm uses five payer accounts (one per fee level). Their first funding also
+needs rent-exempt deposits of about 0.0045 SOL. That is not burned; it is refundable when the
+accounts are emptied.
 
 ## Raw data dictionary
 
@@ -407,7 +472,9 @@ written there and are intended to be committed.
 | `run_meta.json` | Run metadata for the latest `run` invocation. |
 | `spend_ledger_<cluster>.json` | Persistent spend reservations for that cluster. |
 | `obp.log` | Timestamped log. |
-| `leader_schedule_cache.json` | Cached epoch leader schedule (large, optional). |
+| `spend_ledger_snapshot.json` | Copy of the global per-cluster ledger state at the end of the session. |
+| `results_by_group.csv` | Grouped exploratory results by payer arm and order mode, per label. |
+| `leader_schedule_cache.json` | Cached leader schedule keyed by `(cluster, epoch)` (large, optional). |
 
 ### validators.csv
 
@@ -429,22 +496,25 @@ written there and are intended to be committed.
 | `target` | Planned leader identity. |
 | `label` | Client label of the target from `validators.csv`. |
 | `window_start` | First slot of the target 4-slot window. |
-| `send_seq` | Position of this transaction within the burst. |
+| `send_seq` | Planned position of this transaction within the burst. |
+| `send_rank` | Actual send order, assigned by sorting `send_ts_ns` (used by `tau_send`). |
 | `order_mode` | Fee rotation for this burst: `asc`, `desc` or `shuffle`. |
 | `payer_arm` | `same` or `multi`. |
+| `n_unique_payers` | Number of distinct fee payers used in this burst. |
 | `cu_price` | Priority fee in micro-lamports per CU. |
 | `cu_limit` | Compute-unit limit set in the transaction. |
 | `payer` | Fee-payer public key. |
 | `signature` | Transaction signature. |
 | `memo` | Short memo tag. Full metadata is keyed by signature in this file. |
-| `send_ts_ns` | Send timestamp in nanoseconds since the Unix epoch. |
-| `slot_at_send` | Current processed slot when the send was issued. |
+| `send_ts_ns` | Send timestamp per transaction, in nanoseconds since the Unix epoch. |
+| `slot_at_send` | Burst-level processed slot when the final wait returned. |
+| `est_slot_at_send` | Per-tx estimate: `slot_at_send + floor((send_ts_ns - wait_return_ns) / 0.212)`. |
 | `slot_after_send` | Processed slot immediately after the burst was sent. |
-| `send_offset` | `slot_at_send - window_start`. Negative means before the window. |
-| `in_window_at_send` | True when `slot_at_send < window_start + 4`. |
-| `on_time` | True when `slot_at_send < window_start`. |
+| `send_offset` | `est_slot_at_send - window_start`. Negative means before the window. |
+| `in_window_at_send` | True when `est_slot_at_send < window_start + 4`. |
+| `on_time` | True when `est_slot_at_send < window_start`. |
 | `live` | `True` for a real send, `False` for dry run. |
-| `send_result` | `ok`, `dry-run`, or an error string. |
+| `send_result` | Send acknowledgement: `ok`, `dry-run`, `not-sent:...`, or an error string. |
 
 ### landed.csv
 
@@ -456,11 +526,13 @@ written there and are intended to be committed.
 | `target` | Planned leader identity. |
 | `label` | Target client label. |
 | `window_start` | Planned window start. |
-| `send_seq` | Position within the burst. |
+| `send_seq` | Planned position within the burst. |
+| `send_rank` | Actual send order from `send_ts_ns`. |
 | `order_mode` | Fee rotation. |
 | `payer_arm` | `same` or `multi`. |
 | `cu_price` | Priority fee in micro-lamports per CU. |
 | `cluster` | Cluster name. |
+| `send_result` | Send acknowledgement copied from `sent.csv`. |
 | `landed` | True when `getSignatureStatuses` returned a status. |
 | `slot` | Landing slot. |
 | `slot_leader` | Actual leader of the landing slot. |
@@ -500,6 +572,7 @@ written there and are intended to be committed.
 | `block_count` | Number of slots that produced a block. |
 | `expected` | Expected number of leaders/blocks (4). |
 | `sources` | `plan`, `sent`, or `plan+sent`. |
+| `status` | `verified` when `window_end <` the finalized slot, else `planned` (not yet elapsed). |
 | `err` | RPC error, if any. |
 | `checked_at` | UTC timestamp of the check. |
 
@@ -518,17 +591,21 @@ written there and are intended to be committed.
 | `in_target_window` | Whether the landing slot was inside the planned window. |
 | `tau_fee` | Kendall tau of block index against fee. Positive means higher fee earlier. |
 | `p_fee` | Two-sided permutation p-value for `tau_fee`. |
-| `tau_send` | Kendall tau of block index against `send_seq`. Positive means earlier send earlier. |
+| `tau_send` | Kendall tau of block index against actual `send_rank`. Positive means earlier send earlier. |
 | `p_send` | Two-sided permutation p-value for `tau_send`. |
 
-Rows are written only for groups with at least three of our transactions in the same block.
+Rows are written only for groups with at least three of our transactions in the same block, and
+results.csv keeps only target-window rows with the planned leader. `results_by_group.csv` has the
+same columns grouped by `payer_arm` and `order_mode` per label, with burst and transaction counts.
 
 ### results.md
 
-Human-readable report generated by `analyze`. It contains the serialized landed count, the
-measurement send window, per-burst tau tables, pooled per-label tau tables, landing and timing
-rates by label and fee level, verified window counts, and the whole-block approximate priority
-ordering. Tau values carry an explicit sign; rates and probabilities do not.
+Human-readable report generated by `analyze`. It contains the primary-versus-exploratory note,
+the H1/H2/H0 verdict table per label (with raw and Holm-corrected primary p-values), per-burst and
+pooled tau tables, grouped payer-arm/order-mode results, the all-landed sensitivity table, landing
+and timing rates (live-only denominators plus separate dry-run columns) by label and fee level,
+verified-versus-planned window counts, and the whole-block approximate priority ordering. Tau
+values carry an explicit sign; rates and probabilities do not.
 
 ### run_meta.json
 
@@ -538,7 +615,10 @@ ordering. Tau values carry an explicit sign; rates and probabilities do not.
 ### spend_ledger_<cluster>.json
 
 `reserved_lamports` (total worst-case fees reserved so far for that cluster) and `cap_lamports`
-(the cap in force for this ledger). Reservations accumulate across runs and are never released.
+(the cap in force for this ledger). The file is global for the cluster, normally at
+`data/spend_ledger_<cluster>.json` (or `$OBP_LEDGER_DIR/spend_ledger_<cluster>.json`). Reservations
+accumulate across sessions and are never released. A session copy is written to
+`spend_ledger_snapshot.json`.
 
 ## Reproducing from raw data
 

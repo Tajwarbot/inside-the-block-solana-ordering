@@ -8,17 +8,19 @@ from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 from .rpc import Rpc
 from .txbuild import build_memo_tx, memo_tag
-from .spendcap import SpendLedger, worst_case_fee
+from .spendcap import SpendCapExceeded, SpendLedger, worst_case_fee
 
 log = logging.getLogger("obp.probe")
+
+SLOT_TIME_S = 0.212  # measured mainnet slot time post-Alpenglow (2026-10-25)
 
 DEFAULT_MAIN = "/keys/payer.json"
 DEFAULT_EXTRA = [f"/keys/payer{i}.json" for i in range(2, 6)]
 
-SENT_FIELDS = ["run", "cluster", "burst", "target", "label", "window_start", "send_seq", "order_mode",
-               "payer_arm", "cu_price", "cu_limit", "payer", "signature", "memo", "send_ts_ns",
-               "slot_at_send", "slot_after_send", "send_offset", "in_window_at_send", "on_time",
-               "live", "send_result"]
+SENT_FIELDS = ["run", "cluster", "burst", "target", "label", "window_start", "send_seq", "send_rank",
+               "order_mode", "payer_arm", "n_unique_payers", "cu_price", "cu_limit", "payer",
+               "signature", "memo", "send_ts_ns", "slot_at_send", "est_slot_at_send", "slot_after_send",
+               "send_offset", "in_window_at_send", "on_time", "live", "send_result"]
 
 
 def keypair_paths(env_value: str | None = None, payer_arm: str = "same") -> list[str]:
@@ -64,25 +66,35 @@ def calibrate_cu(rpc: Rpc, payer_pubkey: str, memo_len: int = 40) -> int | None:
     return v.get("unitsConsumed")
 
 
-def _wait_for_slot(rpc: Rpc, target_slot: int, poll=0.2, give_up_after=900):
+def _wait_for_slot(rpc: Rpc, target_slot: int, poll=0.05, give_up_after=900):
     t0 = time.time()
     while time.time() - t0 < give_up_after:
         s = rpc.slot("processed")
         if s >= target_slot:
             return s
-        time.sleep(poll if target_slot - s < 20 else min(5, (target_slot - s) * 0.3))
+        remaining = target_slot - s
+        if remaining <= 6:
+            time.sleep(poll)
+        else:
+            # At 0.212 s/slot the old 0.3 s-per-slot far sleep overshot. Stay six slots short and
+            # use a conservative 0.15 s/slot estimate, but never sleep less than one poll interval.
+            time.sleep(max(poll, min(5.0, (remaining - 6) * 0.15)))
     return None
 
 
 def run_bursts(rpc: Rpc, send_rpc: Rpc, plan: list[dict], out_csv: str, ledger: SpendLedger, *,
                live: bool, keypairs: list, run_id: str, fee_levels: list[int], cu_limit: int,
-               lead_slots: int = 2, send_mode: str = "seq", gap_ms: int = 20, payer_arm: str = "same",
+               lead_slots: int = 3, send_mode: str = "seq", gap_ms: int = 20, payer_arm: str = "same",
                seed: int = 1, cluster: str = "localnet"):
     if live and not keypairs:
         raise SystemExit("--live needs payer keypairs (OBP_KEYPAIRS or the default /keys/payer*.json files)")
+    levels = sorted(fee_levels)
+    if live and payer_arm == "multi":
+        distinct = {str(kp.pubkey()) for kp in keypairs}
+        if len(distinct) < len(levels):
+            raise SystemExit(f"payer_arm=multi needs >= {len(levels)} distinct payers "
+                             f"(one per fee level); got {len(distinct)}")
     payers = keypairs if live else [Keypair()]  # dry-run: throwaway, in memory only, never funded
-    if payer_arm == "multi" and len(payers) < 2 and live:
-        raise SystemExit("payer_arm=multi needs >=2 keypairs")
     rnd = random.Random(seed)
     modes = ["asc", "desc", "shuffle"]
     new_file = not os.path.exists(out_csv)
@@ -106,7 +118,6 @@ def run_bursts(rpc: Rpc, send_rpc: Rpc, plan: list[dict], out_csv: str, ledger: 
                          ws, item["target"][:8], prev_slot_after_send)
                 continue
             mode = modes[b % 3]
-            levels = sorted(fee_levels)
             order = {"asc": levels, "desc": levels[::-1], "shuffle": rnd.sample(levels, len(levels))}[mode]
 
             # Check payer balances against this burst's worst-case fee BEFORE waiting/sending.
@@ -120,41 +131,56 @@ def run_bursts(rpc: Rpc, send_rpc: Rpc, plan: list[dict], out_csv: str, ledger: 
                         raise SystemExit(f"payer {pk} has {bal} lamports but this burst can cost up to "
                                          f"{amount}; aborting before sending")
 
-            # Build/sign everything before the final wait, so only sending happens after it.
-            _wait_for_slot(rpc, ws - lead_slots - 1)
+            # Fetch the blockhash and build/sign six slots before the send, never after the final wait.
+            built_slot = _wait_for_slot(rpc, ws - lead_slots - 6)
+            if built_slot is None:
+                log.warning("skip window %s of %s: never reached build slot", ws, item["target"][:8])
+                continue
             bh = rpc.latest_blockhash()["blockhash"]
             txs = []
             for seq, price in enumerate(order):
                 payer = payer_for(seq)
                 memo = memo_tag(run_id, b, seq, price, mode)
                 fee = worst_case_fee(1, cu_limit, price)
-                if live:
-                    ledger.reserve(fee, memo)  # raises SpendCapExceeded -> run stops
                 txs.append((seq, price, payer, memo, fee, build_memo_tx(payer, bh, memo, cu_limit, price)))
+            n_unique_payers = len({str(t[2].pubkey()) for t in txs})
+
             slot_at_send = _wait_for_slot(rpc, ws - lead_slots)
             if slot_at_send is None:
                 log.warning("skip window %s of %s: never reached send slot", ws, item["target"][:8])
                 continue
-            rows = []
+            if slot_at_send >= ws:
+                # Final guard: the window already started, so a send cannot be on time and fees
+                # would be wasted. Nothing has been reserved yet, so skipping is free.
+                log.warning("skip window %s of %s: wait returned slot %s >= window start",
+                            ws, item["target"][:8], slot_at_send)
+                continue
+            t_wait_return_ns = time.time_ns()
+            rows, cap_errors = [], []
 
             def send(seq, price, payer, memo, fee, tx):
                 ts = time.time_ns()
+                est = slot_at_send + int((ts - t_wait_return_ns) // int(SLOT_TIME_S * 1e9))
                 res = "dry-run"
                 if live:
                     try:
+                        ledger.reserve(fee, memo)  # only right before this send
                         send_rpc.call("sendTransaction", [base64.b64encode(bytes(tx)).decode(),
                                       {"encoding": "base64", "skipPreflight": True, "maxRetries": 0}])
                         res = "ok"
+                    except SpendCapExceeded as e:
+                        cap_errors.append(e)
+                        res = f"not-sent:{e}"[:200]
                     except Exception as e:  # noqa: BLE001
                         res = f"error:{e}"[:200]
                 rows.append({"run": run_id, "cluster": cluster, "burst": b, "target": item["target"],
-                             "label": item["label"], "window_start": ws, "send_seq": seq, "order_mode": mode,
-                             "payer_arm": payer_arm, "cu_price": price, "cu_limit": cu_limit,
-                             "payer": str(payer.pubkey()), "signature": str(tx.signatures[0]), "memo": memo,
-                             "send_ts_ns": ts, "slot_at_send": slot_at_send,
-                             "send_offset": slot_at_send - ws,
-                             "in_window_at_send": slot_at_send < ws + 4,
-                             "on_time": slot_at_send < ws, "live": live, "send_result": res})
+                             "label": item["label"], "window_start": ws, "send_seq": seq, "send_rank": "",
+                             "order_mode": mode, "payer_arm": payer_arm, "n_unique_payers": n_unique_payers,
+                             "cu_price": price, "cu_limit": cu_limit, "payer": str(payer.pubkey()),
+                             "signature": str(tx.signatures[0]), "memo": memo, "send_ts_ns": ts,
+                             "slot_at_send": slot_at_send, "est_slot_at_send": est,
+                             "send_offset": est - ws, "in_window_at_send": est < ws + 4,
+                             "on_time": est < ws, "live": live, "send_result": res})
 
             if send_mode == "parallel":
                 th = [threading.Thread(target=send, args=t) for t in txs]
@@ -163,6 +189,8 @@ def run_bursts(rpc: Rpc, send_rpc: Rpc, plan: list[dict], out_csv: str, ledger: 
                 for t in txs:
                     send(*t)
                     time.sleep(gap_ms / 1000)
+            for rank, r in enumerate(sorted(rows, key=lambda r: r["send_ts_ns"])):
+                r["send_rank"] = rank
             slot_after_send = rpc.slot("processed")
             for r in rows:
                 r["slot_after_send"] = slot_after_send
@@ -170,7 +198,10 @@ def run_bursts(rpc: Rpc, send_rpc: Rpc, plan: list[dict], out_csv: str, ledger: 
             for r in sorted(rows, key=lambda r: r["send_seq"]):
                 w.writerow(r)
             f.flush()
-            log.info("burst %d -> %s (%s) window %d mode=%s sent_at_slot=%d offset=%d after=%d %s "
-                     "remaining_cap=%s", b, item["target"][:8], item["label"], ws, mode, slot_at_send,
-                     slot_at_send - ws, slot_after_send, "LIVE" if live else "DRY",
-                     ledger.remaining if live else "-")
+            log.info("burst %d -> %s (%s) window %d mode=%s sent_at_slot=%d offset=[%d..%d] after=%d %s "
+                     "payers=%d remaining_cap=%s", b, item["target"][:8], item["label"], ws, mode,
+                     slot_at_send, min(r["send_offset"] for r in rows),
+                     max(r["send_offset"] for r in rows), slot_after_send, "LIVE" if live else "DRY",
+                     n_unique_payers, ledger.remaining if live else "-")
+            if cap_errors:
+                raise cap_errors[0]

@@ -1,31 +1,34 @@
 """Leader schedule -> upcoming 4-slot leader windows for chosen validators. Read-only."""
 import json, os, random
-from collections import defaultdict
+from collections import defaultdict, deque
 from .rpc import Rpc
 
 WINDOW = 4  # consecutive slots per leader rotation (check this is still 4 on the current cluster)
 
 
 def upcoming_windows(rpc: Rpc, cache_path: str | None = None, horizon_slots: int = 20_000,
-                     min_lead_slots: int = 0):
+                     min_lead_slots: int = 0, cluster: str | None = None):
     """Return {identity: [window_start_slot, ...]} for windows starting within horizon_slots.
 
     Only windows at least `min_lead_slots` after the current slot are returned, so a plan cannot
-    pick a window that is already past by the time `run` starts."""
+    pick a window that is already past by the time `run` starts. The schedule cache is keyed by
+    (cluster, epoch): the same epoch number on another cluster must not be reused."""
     ei = rpc.epoch_info()
     epoch_start = ei["absoluteSlot"] - ei["slotIndex"]
     now = ei["absoluteSlot"]
+    if cluster is None:
+        cluster = rpc.cluster() if hasattr(rpc, "cluster") else "unknown"
     sched = None
     if cache_path and os.path.exists(cache_path):
         with open(cache_path) as f:
             c = json.load(f)
-        if c.get("epoch") == ei["epoch"]:
+        if c.get("epoch") == ei["epoch"] and c.get("cluster") == cluster:
             sched = c["schedule"]
     if sched is None:
         sched = rpc.leader_schedule()  # whole epoch, all leaders (~several MB)
         if cache_path:
             with open(cache_path, "w") as f:
-                json.dump({"epoch": ei["epoch"], "schedule": sched}, f)
+                json.dump({"cluster": cluster, "epoch": ei["epoch"], "schedule": sched}, f)
     earliest = now + min_lead_slots
     out = defaultdict(list)
     for ident, idxs in sched.items():
@@ -37,16 +40,44 @@ def upcoming_windows(rpc: Rpc, cache_path: str | None = None, horizon_slots: int
 
 
 def min_gap_filter(candidates: list[dict], min_gap_slots: int = 12) -> list[dict]:
-    """Keep the earliest window whenever two planned windows start closer than min_gap_slots.
-    The comparison is global across targets, so bursts never bunch up."""
-    kept, last = [], None
+    """Apply the global gap rule with per-target round-robin, so one busy target cannot starve
+    every other target/label. Within a target windows are considered earliest first."""
+    queues = defaultdict(deque)
     for item in sorted(candidates, key=lambda x: (int(x["window_start"]), x.get("target", ""))):
-        ws = int(item["window_start"])
-        if last is not None and ws - last < int(min_gap_slots):
-            continue
-        kept.append(item)
-        last = ws
-    return kept
+        queues[item["target"]].append(item)
+    targets = sorted(queues, key=lambda t: int(queues[t][0]["window_start"]))
+    kept, last = [], None
+    while any(queues[t] for t in targets):
+        progressed = False
+        for target in targets:
+            q = queues[target]
+            while q:
+                item = q[0]
+                ws = int(item["window_start"])
+                if last is None or ws - last >= int(min_gap_slots):
+                    kept.append(item)
+                    q.popleft()
+                    last = ws
+                    progressed = True
+                    break
+                # `last` only moves forward, so this window can never become eligible later.
+                q.popleft()
+        if not progressed:
+            break
+    return sorted(kept, key=lambda x: int(x["window_start"]))
+
+
+def validate_plan(plan: list[dict], min_validators: int = 6, min_labels: int = 3) -> dict:
+    """Assert the post-gap plan still covers enough distinct validators and labels."""
+    targets = {p["target"] for p in plan}
+    labels = {p.get("label", "") for p in plan if p.get("label")}
+    if len(targets) < min_validators:
+        raise SystemExit(f"plan has only {len(targets)} distinct targets after gap filtering; "
+                         f"need >= {min_validators} (widen --horizon/--windows or lower --min-gap-slots)")
+    if len(labels) < min_labels:
+        raise SystemExit(f"plan has only {len(labels)} distinct labels after gap filtering; "
+                         f"need >= {min_labels}")
+    return {"targets": targets, "labels": labels}
 
 
 def pick_targets(inventory: list[dict], windows: dict, per_label: int = 2, min_labels: int = 3,

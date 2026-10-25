@@ -108,3 +108,21 @@ def test_collect_waits_for_a_recent_live_send(tmp_path, monkeypatch):
 
     assert len(sleeps) == 1
     assert abs(sleeps[0] - 19.0) < 1e-6
+
+
+def test_collect_queries_status_even_when_send_acknowledgement_was_an_error(tmp_path):
+    sent_csv = tmp_path / "sent.csv"
+    landed_csv = tmp_path / "landed.csv"
+    blocks_csv = tmp_path / "blocks.csv"
+    row = _sent("s4")
+    row["send_result"] = "error:timeout"
+    _write_sent(sent_csv, [row])
+    fake = FakeRpc(
+        blocks={100: {"blockTime": 1234, "transactions": [_tx("s4", ["payer"])]}},
+        statuses={"s4": {"slot": 100, "err": None}},
+    )
+
+    rows = collect(fake, str(sent_csv), str(landed_csv), str(blocks_csv))
+    assert len(rows) == 1
+    assert rows[0]["landed"] is True
+    assert rows[0]["send_result"] == "error:timeout"

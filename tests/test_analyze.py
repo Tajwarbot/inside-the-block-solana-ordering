@@ -122,3 +122,84 @@ def test_rates_are_unsigned_and_tau_is_signed():
     assert _tau(0.8) == "+0.800"
     assert _tau(-1) == "-1.000"
     assert _tau(None) == "-"
+
+
+from obp.analyze import _holm, _per_burst
+
+
+def _landed_rows(label="C", burst=0, target_ok=True, mode="asc", arm="same", slot=100):
+    from obp.collect import LANDED_FIELDS
+    rows = []
+    for i in range(5):
+        row = {k: "" for k in LANDED_FIELDS}
+        row.update(signature=f"s{label}{burst}{i}", run="r1", burst=burst, target="t",
+                   label=label, window_start=slot, send_seq=i, send_rank=i, order_mode=mode,
+                   payer_arm=arm, cu_price=(i + 1) * 1000, landed="True", slot=slot,
+                   slot_leader="t" if target_ok else "other",
+                   leader_is_target=str(target_ok), in_target_window=str(target_ok),
+                   block_index=4 - i, block_tx_count=10, block_time=1234, our_tx_count=5)
+        rows.append(row)
+    return rows
+
+
+def _write_landed(path, rows):
+    from obp.collect import LANDED_FIELDS
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=LANDED_FIELDS)
+        w.writeheader(); w.writerows(rows)
+
+
+def test_primary_stats_exclude_other_leaders_and_sensitivity_keeps_them(tmp_path):
+    landed_csv = tmp_path / "landed.csv"
+    _write_landed(landed_csv, _landed_rows(burst=0, target_ok=True) +
+                  _landed_rows(burst=1, target_ok=False))
+    out_csv = tmp_path / "results.csv"
+    text = analyze(str(landed_csv), str(out_csv), md_path=str(tmp_path / "results.md"))
+    rows = list(csv.DictReader(open(out_csv)))
+    assert [r["burst"] for r in rows] == ["0"]
+    assert "## Sensitivity: all landed (any leader)" in text
+    assert "| C | 2 | 10 |" in text  # sensitivity pooled: 2 bursts, 10 txs
+
+
+def test_grouped_results_verdicts_and_holm(tmp_path):
+    rows = []
+    for burst, mode in enumerate(["asc", "desc", "shuffle"]):
+        rows += _landed_rows(burst=burst, mode=mode, target_ok=True)
+    landed_csv = tmp_path / "landed.csv"
+    _write_landed(landed_csv, rows)
+    out_csv = tmp_path / "results.csv"
+    text = analyze(str(landed_csv), str(out_csv), md_path=str(tmp_path / "results.md"))
+
+    group_csv = tmp_path / "results_by_group.csv"
+    grouped = list(csv.DictReader(open(group_csv)))
+    assert group_csv.exists()
+    assert {r["group_by"] for r in grouped} == {"payer_arm", "order_mode"}
+    assert {r["group"] for r in grouped if r["group_by"] == "order_mode"} == {"asc", "desc", "shuffle"}
+    assert all(r["txs"] == "5" for r in grouped if r["group_by"] == "order_mode")
+    arm = [r for r in grouped if r["group_by"] == "payer_arm"]
+    assert len(arm) == 1 and arm[0]["txs"] == "15"
+    assert "H1 fee rule" in text
+    assert "Holm p" in text
+
+
+def test_holm_correction_is_monotone_and_capped():
+    adjusted = _holm({"a": 0.01, "b": 0.04, "c": 0.03})
+    assert adjusted["a"] == 0.03
+    assert adjusted["c"] == 0.06
+    assert adjusted["b"] == 0.06
+    assert all(v <= 1 for v in adjusted.values())
+
+
+def test_send_rank_is_used_instead_of_planned_send_seq(tmp_path):
+    from obp.collect import LANDED_FIELDS
+    rows = []
+    for i in range(5):
+        row = {k: "" for k in LANDED_FIELDS}
+        row.update(signature=f"s{i}", run="r1", burst=0, target="t", label="C", window_start=100,
+                   send_seq=4 - i, send_rank=i, order_mode="asc", payer_arm="same",
+                   cu_price=(i + 1) * 1000, landed="True", slot=100, slot_leader="t",
+                   leader_is_target="True", in_target_window="True", block_index=i)
+        rows.append(row)
+    _res, bursts = _per_burst(rows)
+    assert bursts[0]["seq"] == [0, 1, 2, 3, 4]
+    assert bursts[0]["ts"] == 1.0

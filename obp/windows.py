@@ -8,7 +8,7 @@ from .schedule import WINDOW
 
 log = logging.getLogger("obp.windows")
 WINDOW_FIELDS = ["window_start", "window_end", "target", "label", "leaders", "leaders_ok",
-                 "block_slots", "block_count", "expected", "sources", "err", "checked_at"]
+                 "block_slots", "block_count", "expected", "sources", "status", "err", "checked_at"]
 
 
 def _load_windows(plan_json: str, sent_csv: str):
@@ -47,7 +47,21 @@ def verify_windows(rpc: Rpc, plan_json: str, sent_csv: str, out_csv: str):
     wins = _load_windows(plan_json, sent_csv)
     rows = []
     checked_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:
+        finalized = rpc.slot("finalized")
+    except Exception as e:  # noqa: BLE001
+        finalized = None
+        log.warning("could not read finalized slot (%s); elapsed status will not be split", e)
     for (ws, target), d in sorted(wins.items()):
+        window_end = ws + WINDOW - 1
+        if finalized is not None and window_end >= finalized:
+            rows.append({
+                "window_start": ws, "window_end": window_end, "target": target, "label": d.get("label", ""),
+                "leaders": "", "leaders_ok": False, "block_slots": "", "block_count": 0,
+                "expected": WINDOW, "sources": "+".join(sorted(d.get("sources", []))),
+                "status": "planned", "err": "", "checked_at": checked_at,
+            })
+            continue
         err = ""
         try:
             leaders = rpc.slot_leaders(ws, WINDOW)
@@ -65,15 +79,18 @@ def verify_windows(rpc: Rpc, plan_json: str, sent_csv: str, out_csv: str):
             block_slots = []
         leaders_ok = len(leaders) == WINDOW and all(x == target for x in leaders)
         rows.append({
-            "window_start": ws, "window_end": ws + WINDOW - 1, "target": target, "label": d.get("label", ""),
+            "window_start": ws, "window_end": window_end, "target": target, "label": d.get("label", ""),
             "leaders": ";".join(leaders), "leaders_ok": leaders_ok,
             "block_slots": ";".join(str(x) for x in block_slots), "block_count": len(block_slots),
             "expected": WINDOW, "sources": "+".join(sorted(d.get("sources", []))),
-            "err": err, "checked_at": checked_at,
+            "status": "verified", "err": err, "checked_at": checked_at,
         })
     with open(out_csv, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=WINDOW_FIELDS)
         w.writeheader(); w.writerows(rows)
-    ok = sum(1 for r in rows if r["leaders_ok"])
-    log.info("verified %d windows: %d had the target for all %d slots", len(rows), ok, WINDOW)
+    verified = [r for r in rows if r["status"] == "verified"]
+    planned = len(rows) - len(verified)
+    ok = sum(1 for r in verified if r["leaders_ok"])
+    log.info("checked %d windows: %d verified (%d target led all %d slots), %d planned/not yet elapsed",
+             len(rows), len(verified), ok, WINDOW, planned)
     return rows
