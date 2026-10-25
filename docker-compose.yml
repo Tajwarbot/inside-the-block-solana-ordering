@@ -1,5 +1,7 @@
 # One command:  docker compose up        -> dry-run pipeline (inventory, plan, 3 dry bursts)
 # Live run:     OBP_ARGS="--live --cap-sol 0.04" docker compose up   (keys mounted read-only from ./keys)
+# Mainnet live: OBP_ARGS="--live --mainnet --cap-sol 0.04" docker compose up
+# Default payer paths: /keys/payer.json (same arm), plus /keys/payer2.json..payer5.json (multi arm).
 services:
   obp:
     build: .
@@ -7,4 +9,4 @@ services:
     volumes:
       - ./data:/data
       - ./keys:/keys:ro
-    entrypoint: ["sh", "-c", "python -m obp inventory && python -m obp plan && python -m obp run --max-bursts ${OBP_BURSTS:-3} ${OBP_ARGS:-} && python -m obp collect && python -m obp analyze"]
+    entrypoint: ["sh", "-c", "python -m obp inventory && python -m obp plan && python -m obp run --max-bursts ${OBP_BURSTS:-3} ${OBP_ARGS:-} && python -m obp collect && python -m obp verify-windows && python -m obp analyze"]

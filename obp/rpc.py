@@ -1,11 +1,45 @@
-"""Tiny JSON-RPC client with retries and rate-limit backoff (read-only helpers + sendTransaction)."""
-import os, time, json, logging, requests
+"""Tiny JSON-RPC client with a deliberately narrow retry policy, plus cluster identification.
+
+Only HTTP 429/5xx, network failures and explicit JSON-RPC rate limits are retried.
+Other JSON-RPC errors are raised immediately. sendTransaction is NEVER retried.
+"""
+import json
+import logging
+import os
+import time
+
+import requests
 
 log = logging.getLogger("obp.rpc")
 DEFAULT_RPC = os.environ.get("RPC_URL", "https://api.mainnet-beta.solana.com")
 
+# Genesis hashes are stable cluster identities. Anything else is treated as a local test cluster.
+CLUSTER_BY_GENESIS = {
+    "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dWZ5DE": "mainnet",
+    "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG": "devnet",
+    "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY": "testnet",
+}
+RATE_LIMIT_CODES = {-32429, -32005}  # common Solana JSON-RPC rate-limit / throttling codes
+
+
+def cluster_name(genesis_hash: str) -> str:
+    return CLUSTER_BY_GENESIS.get(genesis_hash, "localnet")
+
+
+def guard_live_cluster(cluster: str, *, live: bool, allow_mainnet: bool) -> None:
+    """Mainnet live runs need an extra explicit opt-in, on top of --live."""
+    if live and cluster == "mainnet" and not allow_mainnet:
+        raise SystemExit(
+            "Refusing to send on mainnet: pass --live --mainnet explicitly "
+            "(and make sure the spend cap and payer keys are correct)."
+        )
+
 
 class RpcError(RuntimeError):
+    pass
+
+
+class _Retryable(RpcError):
     pass
 
 
@@ -14,32 +48,58 @@ class Rpc:
         self.url, self.timeout, self.max_retries = url, timeout, max_retries
         self.s = requests.Session()
         self._id = 0
+        self._genesis = None
 
-    def call(self, method: str, params=None):
+    def call(self, method: str, params=None, retries: int | None = None):
+        if method == "sendTransaction":
+            retries = 1  # sending is never safe to retry automatically
+        attempts = max(1, self.max_retries if retries is None else retries)
         self._id += 1
         body = {"jsonrpc": "2.0", "id": self._id, "method": method, "params": params or []}
         delay = 0.5
-        for attempt in range(self.max_retries):
+        last: Exception | None = None
+        for attempt in range(attempts):
             try:
                 r = self.s.post(self.url, json=body, timeout=self.timeout)
                 if r.status_code == 429 or r.status_code >= 500:
-                    raise RpcError(f"HTTP {r.status_code}")
-                j = r.json()
+                    raise _Retryable(f"HTTP {r.status_code}")
+                if r.status_code >= 400:
+                    raise RpcError(f"HTTP {r.status_code}: {r.text[:200]}")
+                try:
+                    j = r.json()
+                except ValueError as e:
+                    raise RpcError(f"invalid JSON response: {e}") from e
                 if "error" in j:
                     err = j["error"]
-                    # -32004/-32007/-32009: block not available / skipped / missing; don't retry forever
-                    if err.get("code") in (-32004, -32007, -32009):
+                    code = err.get("code")
+                    # Block unavailable / skipped / missing: return a sentinel, do NOT retry.
+                    if code in (-32004, -32007, -32009):
                         return {"__error__": err}
-                    raise RpcError(json.dumps(err))
+                    msg = json.dumps(err)
+                    if code in RATE_LIMIT_CODES or "rate limit" in msg.lower() or "too many requests" in msg.lower():
+                        raise _Retryable(msg)
+                    raise RpcError(msg)
                 return j["result"]
-            except (requests.RequestException, RpcError, ValueError) as e:
-                if attempt == self.max_retries - 1:
-                    raise
+            except (requests.RequestException, _Retryable) as e:
+                last = e
+                if attempt == attempts - 1:
+                    break
                 log.debug("%s retry %d after %s", method, attempt + 1, e)
                 time.sleep(delay)
                 delay = min(delay * 2, 8)
+        if isinstance(last, _Retryable):
+            raise RpcError(str(last))
+        raise RpcError(f"network error: {last}")
 
     # convenience wrappers -------------------------------------------------
+    def genesis_hash(self) -> str:
+        if self._genesis is None:
+            self._genesis = self.call("getGenesisHash")
+        return self._genesis
+
+    def cluster(self) -> str:
+        return cluster_name(self.genesis_hash())
+
     def slot(self, commitment="processed"):
         return self.call("getSlot", [{"commitment": commitment}])
 
@@ -58,6 +118,9 @@ class Rpc:
 
     def slot_leaders(self, start, limit):
         return self.call("getSlotLeaders", [start, limit])
+
+    def blocks(self, start, end):
+        return self.call("getBlocks", [start, end, {"commitment": "confirmed"}])
 
     def latest_blockhash(self):
         return self.call("getLatestBlockhash", [{"commitment": "confirmed"}])["value"]

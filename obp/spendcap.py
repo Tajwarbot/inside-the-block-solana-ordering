@@ -1,6 +1,7 @@
 """Hard spend cap. Every transaction reserves its WORST-CASE fee before it is sent; the reservation is
 never released (a tx that does not land is still counted). The ledger is persisted so restarts can't
-reset it. ABSOLUTE_CEILING cannot be raised from the CLI or env."""
+reset it and is split per cluster so local tests never consume the mainnet budget.
+ABSOLUTE_CEILING cannot be raised from the CLI or env."""
 import json, os, threading
 
 LAMPORTS_PER_SOL = 1_000_000_000
@@ -11,6 +12,14 @@ BASE_FEE_PER_SIG = 5_000
 def worst_case_fee(num_sigs: int, cu_limit: int, cu_price_micro: int) -> int:
     prio = -(-cu_limit * cu_price_micro // 1_000_000)  # ceil
     return BASE_FEE_PER_SIG * num_sigs + prio
+
+
+def ledger_filename(cluster: str) -> str:
+    return f"spend_ledger_{cluster}.json"
+
+
+def ledger_path(data_dir: str, cluster: str) -> str:
+    return os.path.join(data_dir, ledger_filename(cluster))
 
 
 class SpendCapExceeded(RuntimeError):

@@ -2,6 +2,7 @@
 DRY-RUN BY DEFAULT: transactions are built (and signed by a throwaway in-memory key that is never saved
 or funded) and logged, but never sent. Real sending needs --live AND keypair files mounted via env."""
 import base64, csv, json, logging, os, random, time, threading
+from collections import defaultdict
 from solders.keypair import Keypair
 from solders.signature import Signature
 from solders.transaction import VersionedTransaction
@@ -10,19 +11,33 @@ from .txbuild import build_memo_tx, memo_tag
 from .spendcap import SpendLedger, worst_case_fee
 
 log = logging.getLogger("obp.probe")
-SENT_FIELDS = ["run", "burst", "target", "label", "window_start", "send_seq", "order_mode", "payer_arm",
-               "cu_price", "cu_limit", "payer", "signature", "memo", "send_ts_ns", "slot_at_send",
-               "on_time", "live", "send_result"]
+
+DEFAULT_MAIN = "/keys/payer.json"
+DEFAULT_EXTRA = [f"/keys/payer{i}.json" for i in range(2, 6)]
+
+SENT_FIELDS = ["run", "cluster", "burst", "target", "label", "window_start", "send_seq", "order_mode",
+               "payer_arm", "cu_price", "cu_limit", "payer", "signature", "memo", "send_ts_ns",
+               "slot_at_send", "on_time", "live", "send_result"]
 
 
-def load_keypairs(env_value: str | None):
-    if not env_value:
-        return []
-    kps = []
-    for p in env_value.split(","):
-        with open(p.strip()) as f:
-            kps.append(Keypair.from_bytes(bytes(json.load(f))))
-    return kps
+def keypair_paths(env_value: str | None = None, payer_arm: str = "same") -> list[str]:
+    """OBP_KEYPAIRS wins. Otherwise: main payer only, or main + payer2..payer5 for the multi arm."""
+    if env_value:
+        return [p.strip() for p in env_value.split(",") if p.strip()]
+    return [DEFAULT_MAIN] if payer_arm == "same" else [DEFAULT_MAIN, *DEFAULT_EXTRA]
+
+
+def all_default_paths() -> list[str]:
+    return [DEFAULT_MAIN, *DEFAULT_EXTRA]
+
+
+def load_keypair(path: str):
+    with open(path) as f:
+        return Keypair.from_bytes(bytes(json.load(f)))
+
+
+def load_keypairs(env_value: str | None = None, payer_arm: str = "same") -> list:
+    return [load_keypair(path) for path in keypair_paths(env_value, payer_arm)]
 
 
 def calibrate_cu(rpc: Rpc, payer_pubkey: str, memo_len: int = 40) -> int | None:
@@ -61,15 +76,19 @@ def _wait_for_slot(rpc: Rpc, target_slot: int, poll=0.2, give_up_after=900):
 def run_bursts(rpc: Rpc, send_rpc: Rpc, plan: list[dict], out_csv: str, ledger: SpendLedger, *,
                live: bool, keypairs: list, run_id: str, fee_levels: list[int], cu_limit: int,
                lead_slots: int = 1, send_mode: str = "seq", gap_ms: int = 20, payer_arm: str = "same",
-               seed: int = 1):
+               seed: int = 1, cluster: str = "localnet"):
     if live and not keypairs:
-        raise SystemExit("--live needs OBP_KEYPAIRS (paths to keypair JSON files, mounted as a volume)")
+        raise SystemExit("--live needs payer keypairs (OBP_KEYPAIRS or the default /keys/payer*.json files)")
     payers = keypairs if live else [Keypair()]  # dry-run: throwaway, in memory only, never funded
     if payer_arm == "multi" and len(payers) < 2 and live:
         raise SystemExit("payer_arm=multi needs >=2 keypairs")
     rnd = random.Random(seed)
     modes = ["asc", "desc", "shuffle"]
     new_file = not os.path.exists(out_csv)
+
+    def payer_for(seq):
+        return payers[seq % len(payers)] if (payer_arm == "multi" and live) else payers[0]
+
     with open(out_csv, "a", newline="") as f:
         w = csv.DictWriter(f, fieldnames=SENT_FIELDS)
         if new_file:
@@ -83,35 +102,48 @@ def run_bursts(rpc: Rpc, send_rpc: Rpc, plan: list[dict], out_csv: str, ledger: 
             mode = modes[b % 3]
             levels = sorted(fee_levels)
             order = {"asc": levels, "desc": levels[::-1], "shuffle": rnd.sample(levels, len(levels))}[mode]
+
+            # Check payer balances against this burst's worst-case fee BEFORE waiting/sending.
+            if live:
+                need = defaultdict(int)
+                for seq, price in enumerate(order):
+                    need[str(payer_for(seq).pubkey())] += worst_case_fee(1, cu_limit, price)
+                for pk, amount in need.items():
+                    bal = rpc.balance(pk)
+                    if bal < amount:
+                        raise SystemExit(f"payer {pk} has {bal} lamports but this burst can cost up to "
+                                         f"{amount}; aborting before sending")
+
             _wait_for_slot(rpc, ws - lead_slots - 1)
             bh = rpc.latest_blockhash()["blockhash"]
             _wait_for_slot(rpc, ws - lead_slots)
             txs = []
             for seq, price in enumerate(order):
-                payer = payers[seq % len(payers)] if (payer_arm == "multi" and live) else payers[0]
+                payer = payer_for(seq)
                 memo = memo_tag(run_id, b, seq, price, mode)
                 fee = worst_case_fee(1, cu_limit, price)
                 if live:
                     ledger.reserve(fee, memo)  # raises SpendCapExceeded -> run stops
-                txs.append((seq, price, payer, memo, build_memo_tx(payer, bh, memo, cu_limit, price)))
+                txs.append((seq, price, payer, memo, fee, build_memo_tx(payer, bh, memo, cu_limit, price)))
             slot_at_send = rpc.slot("processed")
             rows = []
 
-            def send(seq, price, payer, memo, tx):
+            def send(seq, price, payer, memo, fee, tx):
                 ts = time.time_ns()
                 res = "dry-run"
                 if live:
                     try:
-                        res = send_rpc.call("sendTransaction", [base64.b64encode(bytes(tx)).decode(),
-                                            {"encoding": "base64", "skipPreflight": True, "maxRetries": 0}])
+                        send_rpc.call("sendTransaction", [base64.b64encode(bytes(tx)).decode(),
+                                      {"encoding": "base64", "skipPreflight": True, "maxRetries": 0}])
                         res = "ok"
                     except Exception as e:  # noqa: BLE001
                         res = f"error:{e}"[:200]
-                rows.append({"run": run_id, "burst": b, "target": item["target"], "label": item["label"],
-                             "window_start": ws, "send_seq": seq, "order_mode": mode, "payer_arm": payer_arm,
-                             "cu_price": price, "cu_limit": cu_limit, "payer": str(payer.pubkey()),
-                             "signature": str(tx.signatures[0]), "memo": memo, "send_ts_ns": ts,
-                             "slot_at_send": slot_at_send, "on_time": slot_at_send < ws, "live": live, "send_result": res})
+                rows.append({"run": run_id, "cluster": cluster, "burst": b, "target": item["target"],
+                             "label": item["label"], "window_start": ws, "send_seq": seq, "order_mode": mode,
+                             "payer_arm": payer_arm, "cu_price": price, "cu_limit": cu_limit,
+                             "payer": str(payer.pubkey()), "signature": str(tx.signatures[0]), "memo": memo,
+                             "send_ts_ns": ts, "slot_at_send": slot_at_send, "on_time": slot_at_send < ws,
+                             "live": live, "send_result": res})
 
             if send_mode == "parallel":
                 th = [threading.Thread(target=send, args=t) for t in txs]
