@@ -128,13 +128,15 @@ def main():
     pl.add_argument("--labels", default="", help="comma list to restrict client labels")
     pl.add_argument("--min-labels", type=int, default=3)
     pl.add_argument("--min-windows", type=int, default=3)
+    pl.add_argument("--min-lead-slots", type=int, default=25,
+                    help="only plan windows starting at least this many slots after the current slot")
     rn = sub.add_parser("run")
     rn.add_argument("--live", action="store_true", help="REALLY send. Without it nothing is sent.")
     rn.add_argument("--mainnet", action="store_true", help="extra explicit opt-in required for --live on mainnet")
     rn.add_argument("--cap-sol", type=float, default=0.04)
     rn.add_argument("--fee-levels", default="0,1000,10000,100000,1000000", help="micro-lamports per CU")
     rn.add_argument("--cu-limit", type=int, default=int(os.environ.get("OBP_CU_LIMIT", 21000)))
-    rn.add_argument("--lead-slots", type=int, default=1)
+    rn.add_argument("--lead-slots", type=int, default=2)
     rn.add_argument("--send-mode", choices=["seq", "parallel"], default="seq")
     rn.add_argument("--gap-ms", type=int, default=20)
     rn.add_argument("--payer-arm", choices=["same", "multi"], default="same")
@@ -165,7 +167,8 @@ def main():
             r["stake_sol"] = float(r["stake_sol"])
         if a.labels:
             keep = set(a.labels.split(",")); inv = [r for r in inv if r["label"] in keep]
-        wins, now = schedule.upcoming_windows(rpc, p("leader_schedule_cache.json"), a.horizon)
+        wins, now = schedule.upcoming_windows(rpc, p("leader_schedule_cache.json"), a.horizon,
+                                             min_lead_slots=a.min_lead_slots)
         tg = schedule.pick_targets(inv, wins, per_label=a.per_label, min_labels=a.min_labels,
                                    min_windows=a.min_windows)
         plan = [{"target": t["identity"], "label": t["label"], "version": t["version"], "window_start": w}
@@ -205,7 +208,8 @@ def main():
               f"({sum(1 for r in rows if r['leaders_ok'])} have the target for all 4 slots)")
     elif a.cmd == "analyze":
         print(analyze.analyze(p("landed.csv"), p("results.csv"), sent_csv=p("sent.csv"),
-                              blocks_csv=p("blocks.csv"), md_path=p("results.md")))
+                              blocks_csv=p("blocks.csv"), windows_csv=p("windows.csv"),
+                              md_path=p("results.md")))
 
 
 if __name__ == "__main__":

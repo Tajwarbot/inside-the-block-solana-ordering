@@ -140,14 +140,20 @@ def _pooled(bursts):
 
 
 def _landing(sent_rows, landed_sigs):
-    by_label, by_fee = defaultdict(lambda: [0, 0, 0, 0]), defaultdict(lambda: [0, 0, 0, 0])
-    # values: sent, live_sent, landed, on_time
+    by_label = defaultdict(lambda: [0] * 7)
+    by_fee = defaultdict(lambda: [0] * 7)
+    # values: sent, live_sent, landed, on_time, in_window, send_offset_sum, send_offset_n
     for r in sent_rows:
         label = r.get("label") or "(unknown)"
         fee = _int(r.get("cu_price"))
         live = _truth(r.get("live"))
         on_time = _truth(r.get("on_time"))
+        in_window = _truth(r.get("in_window_at_send"))
         landed = live and r.get("signature") in landed_sigs
+        offset = _int(r.get("send_offset"))
+        if offset is None:
+            at, ws = _int(r.get("slot_at_send")), _int(r.get("window_start"))
+            offset = at - ws if at is not None and ws is not None else None
         for bucket, key in ((by_label, label), (by_fee, fee)):
             if key is None:
                 continue
@@ -156,17 +162,39 @@ def _landing(sent_rows, landed_sigs):
             v[1] += int(live)
             v[2] += int(landed)
             v[3] += int(on_time)
+            v[4] += int(in_window)
+            if offset is not None:
+                v[5] += offset
+                v[6] += 1
     labels = []
     for label, v in sorted(by_label.items()):
         labels.append({"label": label, "sent": v[0], "live_sent": v[1], "landed": v[2],
                        "landing_rate": v[2] / v[1] if v[1] else None,
-                       "on_time": v[3], "on_time_rate": v[3] / v[0] if v[0] else None})
+                       "on_time": v[3], "on_time_rate": v[3] / v[0] if v[0] else None,
+                       "in_window": v[4], "in_window_rate": v[4] / v[0] if v[0] else None,
+                       "mean_send_offset": v[5] / v[6] if v[6] else None})
     fees = []
     for fee, v in sorted(by_fee.items()):
         fees.append({"cu_price": fee, "sent": v[0], "live_sent": v[1], "landed": v[2],
                      "landing_rate": v[2] / v[1] if v[1] else None,
                      "on_time": v[3], "on_time_rate": v[3] / v[0] if v[0] else None})
     return labels, fees
+
+
+def _window_summary(rows):
+    by_label = defaultdict(list)
+    for r in rows:
+        by_label[r.get("label") or "(unknown)"].append(r)
+    out = []
+    for label, g in sorted(by_label.items()):
+        out.append({
+            "label": label,
+            "windows": len(g),
+            "leaders_ok": sum(1 for r in g if _truth(r.get("leaders_ok"))),
+            "windows_with_blocks": sum(1 for r in g if (_int(r.get("block_count")) or 0) > 0),
+            "block_slots": sum(_int(r.get("block_count")) or 0 for r in g),
+        })
+    return out
 
 
 def _whole_block(block_rows, landed_rows):
@@ -212,10 +240,15 @@ def _whole_block(block_rows, landed_rows):
     return per_slot, summary
 
 
-def analyze(landed_csv, out_csv, sent_csv=None, blocks_csv=None, md_path=None):
+def analyze(landed_csv, out_csv, sent_csv=None, blocks_csv=None, md_path=None, windows_csv=None):
+    data_dir = os.path.dirname(os.path.abspath(landed_csv)) or "."
+    if windows_csv is None:
+        candidate = os.path.join(data_dir, "windows.csv")
+        windows_csv = candidate if os.path.exists(candidate) else None
     landed_rows = _read_csv(landed_csv)
     sent_rows = _read_csv(sent_csv)
     block_rows = _read_csv(blocks_csv)
+    window_rows = _read_csv(windows_csv)
     res, bursts = _per_burst(landed_rows)
     with open(out_csv, "w", newline="") as f:
         fields = ["run", "burst", "slot", "target", "label", "order_mode", "payer_arm", "n_same_block",
@@ -225,11 +258,11 @@ def analyze(landed_csv, out_csv, sent_csv=None, blocks_csv=None, md_path=None):
 
     landed_sigs = {r.get("signature") for r in landed_rows if _truth(r.get("landed"))}
     landing_labels, landing_fees = _landing(sent_rows, landed_sigs)
+    window_labels = _window_summary(window_rows)
     pooled = _pooled(bursts)
     per_slot, block_summary = _whole_block(block_rows, landed_rows)
 
     send_times = [t for t in (_utc(r.get("send_ts_ns")) for r in sent_rows) if t]
-    data_dir = os.path.dirname(os.path.abspath(landed_csv)) or "."
     plan_created = None
     plan_path = os.path.join(data_dir, "plan.json")
     if os.path.exists(plan_path):
@@ -263,17 +296,31 @@ def analyze(landed_csv, out_csv, sent_csv=None, blocks_csv=None, md_path=None):
                   [[r["label"], r["bursts"], r["mean_tau_fee"], r["mean_tau_send"], r["p_fee"], r["p_send"]]
                    for r in pooled]) if pooled else "_No pooled data._",
         "",
-        "## Landing and on-time",
+        "## Landing and timing",
         "",
-        _md_table(["label", "sent", "live_sent", "landed", "landing rate", "on_time", "on_time rate"],
+        "`on_time` means `slot_at_send < window_start`; `in_window_at_send` means "
+        "`slot_at_send < window_start + 4`. Both rates include dry-run rows.",
+        "",
+        _md_table(["label", "sent", "live_sent", "landed", "landing rate", "on_time", "on_time rate",
+                   "in_window_at_send", "in_window rate", "mean send_offset"],
                   [[r["label"], r["sent"], r["live_sent"], r["landed"], r["landing_rate"], r["on_time"],
-                    r["on_time_rate"]] for r in landing_labels]) if landing_labels else "_No sent rows._",
+                    r["on_time_rate"], r["in_window"], r["in_window_rate"], r["mean_send_offset"]]
+                   for r in landing_labels]) if landing_labels else "_No sent rows._",
         "",
         "### Landing by fee level",
         "",
         _md_table(["cu_price (micro/CU)", "sent", "live_sent", "landed", "landing rate", "on_time", "on_time rate"],
                   [[r["cu_price"], r["sent"], r["live_sent"], r["landed"], r["landing_rate"], r["on_time"],
                     r["on_time_rate"]] for r in landing_fees]) if landing_fees else "_No fee data._",
+        "",
+        "## Verified leader windows",
+        "",
+        "`leaders_ok` = the target held all 4 slots; `block_slots` = slots in those windows that "
+        "actually produced a block. Works on dry-run data because it needs no signatures.",
+        "",
+        _md_table(["label", "windows", "leaders_ok", "windows with blocks", "block_slots"],
+                  [[r["label"], r["windows"], r["leaders_ok"], r["windows_with_blocks"], r["block_slots"]]
+                   for r in window_labels]) if window_labels else "_No windows.csv data._",
         "",
         "## Whole-block priority ordering (APPROXIMATION)",
         "",

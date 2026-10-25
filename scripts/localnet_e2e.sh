@@ -24,8 +24,31 @@ esac
 echo "localnet cluster check ok ($cluster); data -> $OBP_DATA"
 
 "$PYTHON" -m obp inventory
-"$PYTHON" -m obp plan --min-labels 1 --horizon 400
+"$PYTHON" -m obp plan --min-labels 1 --horizon 400 --windows 3 --min-lead-slots 25
 "$PYTHON" -m obp run --live --max-bursts 3
+
+"$PYTHON" - "$OBP_DATA" <<'PY'
+import csv, os, sys
+
+with open(os.path.join(sys.argv[1], "sent.csv"), newline="") as f:
+    sent = list(csv.DictReader(f))
+live_ok = [r for r in sent if r.get("live") == "True" and r.get("send_result") == "ok"]
+if not live_ok:
+    sys.exit("FAIL: sent.csv has no live rows with send_result=ok")
+print(f"sent.csv: {len(live_ok)} live sends ok")
+PY
+
 "$PYTHON" -m obp collect
 "$PYTHON" -m obp verify-windows
 "$PYTHON" -m obp analyze
+
+"$PYTHON" - "$OBP_DATA" <<'PY'
+import csv, os, sys
+
+with open(os.path.join(sys.argv[1], "landed.csv"), newline="") as f:
+    landed = list(csv.DictReader(f))
+count = sum(1 for r in landed if str(r.get("landed")).lower() == "true")
+if count == 0:
+    sys.exit("FAIL: collect landed 0 txs")
+print(f"landed.csv: {count} landed txs")
+PY

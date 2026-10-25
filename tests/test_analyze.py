@@ -18,7 +18,8 @@ def test_perm_p_basics():
 def test_analyze_survives_dry_run_only_data(tmp_path):
     sent_csv = tmp_path / "sent.csv"
     fields = ["run", "burst", "target", "label", "window_start", "send_seq", "order_mode",
-              "payer_arm", "cu_price", "live", "on_time", "signature", "send_ts_ns"]
+              "payer_arm", "cu_price", "live", "on_time", "in_window_at_send", "send_offset",
+              "signature", "send_ts_ns"]
     with open(sent_csv, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
@@ -26,6 +27,7 @@ def test_analyze_survives_dry_run_only_data(tmp_path):
             w.writerow({"run": "r1", "burst": 0, "target": "t", "label": "DryClient",
                         "window_start": 10, "send_seq": i, "order_mode": "asc", "payer_arm": "same",
                         "cu_price": 1000 * i, "live": "False", "on_time": "True",
+                        "in_window_at_send": str(i < 4), "send_offset": -2,
                         "signature": f"s{i}", "send_ts_ns": 1_700_000_000_000_000_000 + i})
     out_csv = tmp_path / "results.csv"
     md_path = tmp_path / "results.md"
@@ -33,9 +35,24 @@ def test_analyze_survives_dry_run_only_data(tmp_path):
                    blocks_csv=str(tmp_path / "missing_blocks.csv"), md_path=str(md_path))
     assert out_csv.exists()
     assert md_path.exists()
-    assert "Landing and on-time" in text
+    assert "Landing and timing" in text
     assert "on_time rate" in text
+    assert "in_window rate" in text
+    assert "Verified leader windows" in text
     assert list(csv.DictReader(open(out_csv))) == []
+
+
+def test_analyze_reports_verified_window_counts_from_windows_csv(tmp_path):
+    windows_csv = tmp_path / "windows.csv"
+    with open(windows_csv, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["label", "leaders_ok", "block_count"])
+        w.writeheader()
+        w.writerow({"label": "C", "leaders_ok": "True", "block_count": 4})
+        w.writerow({"label": "C", "leaders_ok": "False", "block_count": 0})
+    text = analyze(str(tmp_path / "missing_landed.csv"), str(tmp_path / "results.csv"),
+                   windows_csv=str(windows_csv), md_path=str(tmp_path / "results.md"))
+    assert "## Verified leader windows" in text
+    assert "| C | 2 | 1 | 1 | 4 |" in text
 
 
 def test_analyze_with_landed_and_block_rows(tmp_path):
