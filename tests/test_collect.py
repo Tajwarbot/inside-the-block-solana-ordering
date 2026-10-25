@@ -87,3 +87,24 @@ def test_collect_handles_skipped_block_error(tmp_path):
     assert rows[0]["block_index"] == ""
     assert rows[0]["landed"] is True
     assert list(csv.DictReader(open(blocks_csv))) == []
+
+
+def test_collect_waits_for_a_recent_live_send(tmp_path, monkeypatch):
+    sent_csv = tmp_path / "sent.csv"
+    landed_csv = tmp_path / "landed.csv"
+    blocks_csv = tmp_path / "blocks.csv"
+    row = _sent("s1")
+    row["send_ts_ns"] = "999000000000"
+    _write_sent(sent_csv, [row])
+    fake = FakeRpc(
+        blocks={100: {"blockTime": 1234, "transactions": [_tx("s1", ["payer"])]}},
+        statuses={"s1": {"slot": 100, "err": None}},
+    )
+    sleeps = []
+    monkeypatch.setattr("obp.collect.time.time", lambda: 1000.0)
+    monkeypatch.setattr("obp.collect.time.sleep", lambda sec: sleeps.append(sec))
+
+    collect(fake, str(sent_csv), str(landed_csv), str(blocks_csv), wait_sec=20)
+
+    assert len(sleeps) == 1
+    assert abs(sleeps[0] - 19.0) < 1e-6

@@ -91,8 +91,14 @@ def _fmt(v, nd=3):
     if v is None:
         return "-"
     if isinstance(v, float):
-        return f"{v:+.{nd}f}"
+        return f"{v:.{nd}f}"
     return str(v)
+
+
+def _tau(v, nd=3):
+    if v is None:
+        return "-"
+    return f"{v:+.{nd}f}"
 
 
 def _md_table(headers, rows):
@@ -262,6 +268,7 @@ def analyze(landed_csv, out_csv, sent_csv=None, blocks_csv=None, md_path=None, w
     pooled = _pooled(bursts)
     per_slot, block_summary = _whole_block(block_rows, landed_rows)
 
+    landed_true = sum(1 for r in landed_rows if _truth(r.get("landed")))
     send_times = [t for t in (_utc(r.get("send_ts_ns")) for r in sent_rows) if t]
     plan_created = None
     plan_path = os.path.join(data_dir, "plan.json")
@@ -279,7 +286,7 @@ def analyze(landed_csv, out_csv, sent_csv=None, blocks_csv=None, md_path=None, w
         f"- Measurement send window (UTC): {send_times[0] if send_times else 'n/a'}"
         f" to {send_times[-1] if send_times else 'n/a'}",
         f"- Plan created (UTC): {plan_created or 'n/a'}",
-        f"- Rows: sent={len(sent_rows)}, landed={len(landed_rows)}, block_txs={len(block_rows)}",
+        f"- Rows: sent={len(sent_rows)}, landed={landed_true}, block_txs={len(block_rows)}",
         "",
         "Positive tau means higher fee (or earlier send order) appears earlier in the block.",
         "Permutation p-values use a two-sided null; small samples give weak evidence.",
@@ -288,13 +295,13 @@ def analyze(landed_csv, out_csv, sent_csv=None, blocks_csv=None, md_path=None, w
         "",
         _md_table(["label", "target", "arm", "slot", "n", "tau_fee", "p_fee", "tau_send", "p_send"],
                   [[r["label"], r["target"][:8], r["payer_arm"], r["slot"], r["n_same_block"],
-                    r["tau_fee"], r["p_fee"], r["tau_send"], r["p_send"]] for r in res]) if res else "_No same-block groups with >=3 of our txs._",
+                    _tau(r["tau_fee"]), r["p_fee"], _tau(r["tau_send"]), r["p_send"]] for r in res]) if res else "_No same-block groups with >=3 of our txs._",
         "",
         "## Pooled per client label",
         "",
         _md_table(["label", "bursts", "mean tau_fee", "mean tau_send", "pooled p_fee", "pooled p_send"],
-                  [[r["label"], r["bursts"], r["mean_tau_fee"], r["mean_tau_send"], r["p_fee"], r["p_send"]]
-                   for r in pooled]) if pooled else "_No pooled data._",
+                  [[r["label"], r["bursts"], _tau(r["mean_tau_fee"]), _tau(r["mean_tau_send"]),
+                    r["p_fee"], r["p_send"]] for r in pooled]) if pooled else "_No pooled data._",
         "",
         "## Landing and timing",
         "",
@@ -329,13 +336,13 @@ def analyze(landed_csv, out_csv, sent_csv=None, blocks_csv=None, md_path=None, w
         "Positive tau = higher approximate priority fee appears earlier in the block.",
         "",
         _md_table(["label", "slots", "mean tau_priority (approx)", "non-vote txs"],
-                  [[r["label"], r["slots"], r["mean_tau_priority_approx"], r["non_vote_txs"]]
+                  [[r["label"], r["slots"], _tau(r["mean_tau_priority_approx"]), r["non_vote_txs"]]
                    for r in block_summary]) if block_summary else "_No labelled blocks with >=3 non-vote txs._",
         "",
         "### Per-slot whole-block check",
         "",
         _md_table(["slot", "label", "non-vote txs", "tau_priority (approx)"],
-                  [[r["slot"], r["label"], r["n_non_vote"], r["tau_priority_approx"]] for r in per_slot])
+                  [[r["slot"], r["label"], r["n_non_vote"], _tau(r["tau_priority_approx"])] for r in per_slot])
         if per_slot else "_No per-slot data._",
         "",
     ]

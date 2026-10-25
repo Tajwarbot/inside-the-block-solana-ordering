@@ -24,7 +24,7 @@ esac
 echo "localnet cluster check ok ($cluster); data -> $OBP_DATA"
 
 "$PYTHON" -m obp inventory
-"$PYTHON" -m obp plan --min-labels 1 --horizon 400 --windows 3 --min-lead-slots 25
+"$PYTHON" -m obp plan --min-labels 1 --horizon 400 --windows 9 --min-lead-slots 25 --min-gap-slots 12
 "$PYTHON" -m obp run --live --max-bursts 3
 
 "$PYTHON" - "$OBP_DATA" <<'PY'

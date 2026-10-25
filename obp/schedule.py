@@ -36,6 +36,19 @@ def upcoming_windows(rpc: Rpc, cache_path: str | None = None, horizon_slots: int
     return {k: sorted(v) for k, v in out.items()}, now
 
 
+def min_gap_filter(candidates: list[dict], min_gap_slots: int = 12) -> list[dict]:
+    """Keep the earliest window whenever two planned windows start closer than min_gap_slots.
+    The comparison is global across targets, so bursts never bunch up."""
+    kept, last = [], None
+    for item in sorted(candidates, key=lambda x: (int(x["window_start"]), x.get("target", ""))):
+        ws = int(item["window_start"])
+        if last is not None and ws - last < int(min_gap_slots):
+            continue
+        kept.append(item)
+        last = ws
+    return kept
+
+
 def pick_targets(inventory: list[dict], windows: dict, per_label: int = 2, min_labels: int = 3,
                  min_windows: int = 3, seed: int = 7):
     """Choose validators so that every client label is represented by `per_label` validators that

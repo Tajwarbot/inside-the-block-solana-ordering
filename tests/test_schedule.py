@@ -26,3 +26,19 @@ def test_min_lead_slots_filters_imminent_windows():
 
     wins, _ = upcoming_windows(rpc, None, horizon_slots=100, min_lead_slots=24)
     assert wins["A"][0] == 124  # exactly at now + min_lead_slots is included
+
+
+def test_min_gap_filter_keeps_the_earliest_window_globally():
+    from obp.schedule import min_gap_filter
+
+    candidates = [{"window_start": w, "target": "A"} for w in (120, 104, 100, 112, 116, 108)]
+    assert [x["window_start"] for x in min_gap_filter(candidates, 12)] == [100, 112]
+    candidates.append({"window_start": 124, "target": "B"})
+    assert [x["window_start"] for x in min_gap_filter(candidates, 12)] == [100, 112, 124]
+
+
+def test_min_gap_filter_zero_keeps_everything_at_distinct_slots():
+    from obp.schedule import min_gap_filter
+
+    candidates = [{"window_start": w, "target": "A"} for w in (104, 100, 108)]
+    assert [x["window_start"] for x in min_gap_filter(candidates, 0)] == [100, 104, 108]

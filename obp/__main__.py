@@ -6,7 +6,9 @@
   python -m obp run --live --mainnet      # additionally required on mainnet
   python -m obp fund --lamports 1000000   # dry-run unless --live
   python -m obp balances
-  python -m obp collect && python -m obp verify-windows && python -m obp analyze
+  python -m obp collect --wait-sec 20
+  python -m obp verify-windows && python -m obp analyze
+  python -m obp --run-dir data/runs/20261028_pilot inventory
 """
 import argparse, base64, csv, json, logging, os, subprocess, sys, time
 import solders
@@ -120,7 +122,11 @@ def cmd_fund(a, rpc, send_rpc):
 
 
 def main():
+    global DATA
     ap = argparse.ArgumentParser(prog="obp")
+    ap.add_argument("--run-dir", default=os.environ.get("OBP_DATA", "data"), metavar="DIR",
+                    help="data directory for this session (default: OBP_DATA, else data). "
+                         "Use data/runs/<YYYYMMDD>_<name> per measurement session.")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("inventory")
     pl = sub.add_parser("plan"); pl.add_argument("--per-label", type=int, default=2)
@@ -130,6 +136,8 @@ def main():
     pl.add_argument("--min-windows", type=int, default=3)
     pl.add_argument("--min-lead-slots", type=int, default=25,
                     help="only plan windows starting at least this many slots after the current slot")
+    pl.add_argument("--min-gap-slots", type=int, default=12,
+                    help="do not plan two windows that start less than this many slots apart; keep the earliest")
     rn = sub.add_parser("run")
     rn.add_argument("--live", action="store_true", help="REALLY send. Without it nothing is sent.")
     rn.add_argument("--mainnet", action="store_true", help="extra explicit opt-in required for --live on mainnet")
@@ -149,8 +157,15 @@ def main():
     sub.add_parser("balances")
     cal = sub.add_parser("calibrate"); cal.add_argument("--sim-payer", required=True,
                                                      help="any existing funded pubkey; simulation only")
-    sub.add_parser("collect"); sub.add_parser("verify-windows"); sub.add_parser("analyze")
+    co = sub.add_parser("collect")
+    co.add_argument("--wait-sec", type=float, default=20,
+                    help="if the newest send is younger than this, wait before checking statuses")
+    sub.add_parser("verify-windows"); sub.add_parser("analyze")
+    for sp in sub.choices.values():
+        sp.add_argument("--run-dir", default=argparse.SUPPRESS, metavar="DIR",
+                        help="data directory (also accepted before the subcommand)")
     a = ap.parse_args()
+    DATA = a.run_dir
     os.makedirs(DATA, exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s",
                         handlers=[logging.StreamHandler(), logging.FileHandler(p("obp.log"))])
@@ -171,14 +186,17 @@ def main():
                                              min_lead_slots=a.min_lead_slots)
         tg = schedule.pick_targets(inv, wins, per_label=a.per_label, min_labels=a.min_labels,
                                    min_windows=a.min_windows)
-        plan = [{"target": t["identity"], "label": t["label"], "version": t["version"], "window_start": w}
-                for t in tg for w in wins[t["identity"]][: a.windows]]
+        candidates = [{"target": t["identity"], "label": t["label"], "version": t["version"], "window_start": w}
+                      for t in tg for w in wins[t["identity"]][: a.windows]]
+        plan = schedule.min_gap_filter(candidates, a.min_gap_slots)
         json.dump({"created_slot": now, "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                    "plan": plan}, open(p("plan.json"), "w"), indent=1)
         for t in tg:
             first = wins[t["identity"]][0]
             print(f"{t['label']:<20} {t['identity'][:10]} v{t['version']:<14} stake={t['stake_sol']:>12,.0f} "
                   f"next window in ~{(first - now) * 0.4 / 60:.1f} min ({len(wins[t['identity']])} windows in horizon)")
+        if len(plan) < len(candidates):
+            print(f"{len(candidates) - len(plan)} windows dropped by --min-gap-slots {a.min_gap_slots}")
         print(f"{len(plan)} bursts planned -> {p('plan.json')}")
     elif a.cmd == "run":
         cluster = _checked_cluster(a, rpc, send_rpc)
@@ -201,7 +219,7 @@ def main():
     elif a.cmd == "calibrate":
         print("memo tx compute units:", probe.calibrate_cu(rpc, a.sim_payer))
     elif a.cmd == "collect":
-        collect.collect(rpc, p("sent.csv"), p("landed.csv"), p("blocks.csv"))
+        collect.collect(rpc, p("sent.csv"), p("landed.csv"), p("blocks.csv"), wait_sec=a.wait_sec)
     elif a.cmd == "verify-windows":
         rows = windows.verify_windows(rpc, p("plan.json"), p("sent.csv"), p("windows.csv"))
         print(f"{len(rows)} windows -> {p('windows.csv')} "

@@ -96,3 +96,29 @@ def test_analyze_with_landed_and_block_rows(tmp_path):
     assert rows[0]["tau_fee"] not in ("", None)
     assert "Pooled per client label" in text
     assert "Whole-block priority ordering" in text
+
+
+def test_results_header_counts_only_landed_true_rows(tmp_path):
+    from obp.collect import LANDED_FIELDS
+
+    landed_csv = tmp_path / "landed.csv"
+    with open(landed_csv, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=LANDED_FIELDS)
+        w.writeheader()
+        for i in range(5):
+            row = {k: "" for k in LANDED_FIELDS}
+            row.update(signature=f"s{i}", landed="True" if i < 4 else "False")
+            w.writerow(row)
+    text = analyze(str(landed_csv), str(tmp_path / "results.csv"), md_path=str(tmp_path / "results.md"))
+    assert "- Rows: sent=0, landed=4, block_txs=0" in text
+    assert "landed=5" not in text
+
+
+def test_rates_are_unsigned_and_tau_is_signed():
+    from obp.analyze import _fmt, _tau
+
+    assert _fmt(0.8) == "0.800"
+    assert _fmt(0.0) == "0.000"
+    assert _tau(0.8) == "+0.800"
+    assert _tau(-1) == "-1.000"
+    assert _tau(None) == "-"

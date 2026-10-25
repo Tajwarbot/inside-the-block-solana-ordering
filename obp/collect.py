@@ -1,7 +1,7 @@
 """Find where our transactions landed: slot, leader, intra-block index. Read-only.
 Also dumps every transaction of those blocks (index, fee, CUs) as supplementary data.
 Re-running is idempotent: slots already in blocks.csv are not fetched/written again."""
-import csv, logging, os
+import csv, logging, os, time
 from collections import defaultdict
 from .rpc import Rpc
 
@@ -48,8 +48,31 @@ def _read_blocks(path):
     return index_of, count_of, time_of, slots
 
 
-def collect(rpc: Rpc, sent_csv: str, landed_csv: str, blocks_csv: str):
-    sent = [r for r in csv.DictReader(open(sent_csv)) if r["live"] == "True" and r["send_result"] == "ok"]
+def _wait_for_newest_send(sent_rows, wait_sec):
+    """Sleep until the newest send in sent.csv is at least `wait_sec` old, so a status check that
+    runs immediately after a burst does not miss a transaction that confirms a second or two later."""
+    if not wait_sec or wait_sec <= 0:
+        return
+    newest = None
+    for r in sent_rows:
+        try:
+            ts_ns = int(r.get("send_ts_ns"))
+        except (TypeError, ValueError):
+            continue
+        newest = ts_ns if newest is None else max(newest, ts_ns)
+    if newest is None:
+        return
+    age = time.time() - newest / 1e9
+    if age < wait_sec:
+        delay = wait_sec - age
+        log.info("newest send is %.1fs old; waiting %.1fs before collecting", age, delay)
+        time.sleep(delay)
+
+
+def collect(rpc: Rpc, sent_csv: str, landed_csv: str, blocks_csv: str, wait_sec: float = 0):
+    sent_rows = list(csv.DictReader(open(sent_csv)))
+    _wait_for_newest_send(sent_rows, wait_sec)
+    sent = [r for r in sent_rows if r["live"] == "True" and r["send_result"] == "ok"]
     if not sent:
         log.warning("no live sends in %s (dry-run data has nothing to collect)", sent_csv)
         return []
