@@ -76,6 +76,8 @@ The primary statistic is Kendall tau of ledger index against fee, and against ac
 
 Only bursts where at least three of our five transactions co-landed in the target block enter the tau tests. Higher-fee transactions may land more often, so this conditions on landing and can bias the ordering sample toward higher fees. That is a selection effect, not a finding; `results.md` reports the landed-per-burst distribution so the reader can judge it.
 
+Pre-specification: the primary test below was fixed in `obp/analyze.py` at commit `c08a131` (2026-10-25 17:13 UTC), about 70 minutes before the first live send (pilot, 18:22 UTC). It is not the same as the early design notes, which planned H1 over all three rotations, lead 1 and separate same and multi arms. Deviations from those notes: lead 2 (chosen by the pilot), the alternate arm in one run, and descending excluded from the primary set. "Pre-registered" in this report means pre-specified in code before live data, not a public registration.
+
 The pre-registered primary test is the pooled mean `tau_fee` per client label on the same-payer arm, using only ascending + shuffled bursts and only target-window rows with the planned leader. Holm correction is applied across the per-label primary p-values, separately for H1 (fee) and H2 (send order). Descending bursts are excluded from the primary test because there fee order equals send order (confounded); they are a consistency check only. All other cuts are exploratory. The per-label verdict rule is: H1 if pooled mean `tau_fee > 0` with Holm-adjusted `p < 0.05` and `tau_fee > 0` on ascending bursts alone; H2 if pooled mean `tau_send > 0` with Holm-adjusted `p < 0.05` and `tau_send > 0` on ascending bursts alone; mixed if both H1 and H2 markers hold; "no rule detected (H0 not rejected)" if neither holds; "insufficient data" if there are no primary groups.
 
 ## Results
@@ -312,8 +314,9 @@ Primary verdicts, 2026-10-31 follow-up sessions pooled (2, 3 and 4), same-payer 
 | HarmonicFiredancer | 6 | 25 | +0.500 | 0.009 | 0.060 | no rule detected (H0 not rejected) |
 | JitoLabs | 5 | 21 | +0.213 | 0.347 | 1.000 | no rule detected (H0 not rejected) |
 | Rakurai | 1 | 3 | +0.333 | 1.000 | 1.000 | no rule detected (H0 not rejected) |
+| Raiku | 0 | 0 | not available | not available | not available | insufficient data |
 
-Every label with data has a positive or zero follow-up `tau_fee` except Frankendancer (1 burst). The follow-up alone is too small for any Holm-significant result.
+Every label with primary data has a positive or zero follow-up `tau_fee` except Frankendancer (1 burst). Raiku has no primary bursts; its 1 descending burst (consistency only) has `tau_fee` -0.800. The follow-up alone is too small for any Holm-significant result.
 
 All four parallel sessions pooled (2026-10-25 plus follow-ups), same primary set. This pooling is stated here as the summary for the parallel design; per-session tables are in each `results.md`:
 
@@ -328,6 +331,7 @@ All four parallel sessions pooled (2026-10-25 plus follow-ups), same primary set
 | HarmonicFiredancer | 10 | 44 | +0.467 | 0.002 | 0.011 | +0.453 | H1 fee rule |
 | JitoLabs | 9 | 41 | +0.207 | 0.194 | 0.968 | +0.240 | no rule detected (H0 not rejected) |
 | Rakurai | 1 | 3 | +0.333 | 1.000 | 1.000 | not available | no rule detected (H0 not rejected) |
+| Raiku | 0 | 0 | not available | not available | not available | not available | insufficient data |
 
 Holm is applied across the 9 labels with primary data (Raiku has 0 primary bursts). `tau_send` is not Holm-significant for any label in any parallel cut; thread start time is not arrival order there.
 
@@ -368,7 +372,7 @@ Primary verdicts, main sequential session, same-payer arm, ascending + shuffled:
 | Mixed | Both H1 and H2 markers hold | No label has both markers. | Not observed |
 | H0: noise | Signs and magnitudes vary; pooled p not small; landing too thin | Agave (2 primary bursts) and FireBAM (2 primary bursts) fail to reject H0. | Weak no-rule, small n |
 
-Overall conclusion: the sequential result is a send-order result, not a fee-rule result, because the burst is too spread out in time. The parallel design puts the five transactions in front of the scheduler together. Pooled over four parallel sessions on two days, it shows a Holm-significant fee ordering for AgaveBam (5 bursts), HarmonicAgave (4) and HarmonicFiredancer (10). Firedancer is positive but not Holm-significant (4 bursts). JitoLabs is weakly positive on 9 bursts and not significant. FireBAM and Rakurai are not significant. Vanilla Agave goes the other way on 2 bursts and is weak. Whole-block priority ordering is near zero for every label in both sessions. Fee level did not change landing rate: zero-priority-fee transactions landed as often as the 1,000,000 micro-lamport/CU level in both sessions. The parallel fee results rest on 1 to 10 primary bursts per label and are weak except HarmonicFiredancer. Agave, FireBAM and Rakurai have 1 to 3 primary bursts in the main run as well.
+Overall conclusion: the sequential result is a send-order result, not a fee-rule result, because the burst is too spread out in time. The parallel design puts the five transactions in front of the scheduler together. Pooled over four parallel sessions on two days, it shows a Holm-significant fee ordering for AgaveBam (5 bursts), HarmonicAgave (4) and HarmonicFiredancer (10). Firedancer is positive but not Holm-significant (4 bursts). JitoLabs is weakly positive on 9 bursts and not significant. FireBAM and Rakurai are not significant. Vanilla Agave goes the other way on 2 bursts and is weak. Whole-block priority ordering is near zero for every label in both sessions. Fee level had no consistent effect on landing: every fee level landed 125/125 in the main run and 65/66 in the 2026-10-25 parallel session. Follow-up 4 landed 83, 92, 94, 94 and 81 of 96 per fee level from 0 to 1,000,000 micro-lamports/CU, so the top fee did not land more often. The parallel fee results rest on 1 to 10 primary bursts per label and are weak except HarmonicFiredancer. Agave, FireBAM and Rakurai have 1 to 3 primary bursts in the main run as well.
 
 Per-client summary:
 
@@ -425,7 +429,7 @@ The committed `results.md` for dry run d was regenerated on 2026-10-31 with the 
 - The 5 parallel transactions that did not land were never accepted by the public RPC: burst 61 got HTTP 413 "You have used your data allowance", burst 64 lost 3 sends to "Remote end closed connection", and burst 70 got HTTP 429. Every transaction the RPC accepted landed. The public RPC rate limits started near the end of the parallel session, after heavy `getBlock` use by `collect`.
 - Small per-label samples: Agave, FireBAM and Rakurai have 1 to 3 primary bursts in the main run. Primary verdicts with 2 or 3 bursts are weak.
 - The planned sequential repeat was never run. The second-day sample is the 2026-10-31 parallel follow-up instead.
-- On 2026-10-31 the public RPC took about 1.25 s per `sendTransaction` (168 ms on 2026-10-25). With lead 2 most transactions landed after the target window, in the next leader's block. Follow-up 3 was stopped after 12 bursts with 0 in-window landings. Follow-up 4 used lead 6, chosen after seeing the landing offsets; it overshot in 110 of 444 landed transactions.
+- On 2026-10-31 the public RPC took a median 1.25 s to 1.29 s per `sendTransaction` in follow-ups 2 and 3 and 0.81 s in follow-up 4 (168 ms on 2026-10-25). With lead 2 most transactions landed after the target window, in the next leader's block. Follow-up 3 was stopped after 12 bursts with 0 in-window landings. Follow-up 4 used lead 6, chosen after seeing the landing offsets; 110 of its 444 landed transactions landed 1 to 3 slots early, in the previous leader's block.
 - `--max-bursts` counted 87 skipped attempts in follow-up 2 because the slow `getSlot` replies often returned after the window start.
 - The target of 8 or more primary bursts per main label in the parallel design was not met; the ledger was at 32.4M of 35M lamports when sending stopped.
 - The send path is a public RPC only. The forwarding path from RPC to leader TPU and SWQoS is not observed.
@@ -451,7 +455,7 @@ The committed `results.md` for dry run d was regenerated on 2026-10-31 with the 
 | Main sequential | `data/runs/20261025_1828_main/sent.csv` | `data/runs/20261025_1828_main/landed.csv` | `data/runs/20261025_1828_main/blocks.csv` | `data/runs/20261025_1828_main/windows.csv` | `data/runs/20261025_1828_main/results.csv` | `data/runs/20261025_1828_main/results.md` | `data/runs/20261025_1828_main/spend_ledger_snapshot.json` |
 | Parallel | `data/runs/20261025_1907_parallel/sent.csv` | `data/runs/20261025_1907_parallel/landed.csv` | `data/runs/20261025_1907_parallel/blocks.csv` | `data/runs/20261025_1907_parallel/windows.csv` | `data/runs/20261025_1907_parallel/results.csv` | `data/runs/20261025_1907_parallel/results.md` | `data/runs/20261025_1907_parallel/spend_ledger_snapshot.json` |
 | Parallel follow-up 2 | `data/runs/20261031_par2_parallel/sent.csv` | `data/runs/20261031_par2_parallel/landed.csv` | `data/runs/20261031_par2_parallel/blocks.csv` | `data/runs/20261031_par2_parallel/windows.csv` | `data/runs/20261031_par2_parallel/results.csv` | `data/runs/20261031_par2_parallel/results.md` | `data/runs/20261031_par2_parallel/spend_ledger_snapshot.json` |
-| Parallel follow-up 3 | `data/runs/20261031_par3_parallel/sent.csv` | `data/runs/20261031_par3_parallel/landed.csv` | `data/runs/20261031_par3_parallel/blocks.csv` | `data/runs/20261031_par3_parallel/windows.csv` | `data/runs/20261031_par3_parallel/results.csv` | `data/runs/20261031_par3_parallel/results.md` | `data/runs/20261031_par3_parallel/spend_ledger_snapshot.json` |
+| Parallel follow-up 3 | `data/runs/20261031_par3_parallel/sent.csv` | `data/runs/20261031_par3_parallel/landed.csv` | `data/runs/20261031_par3_parallel/blocks.csv` | `data/runs/20261031_par3_parallel/windows.csv` | `data/runs/20261031_par3_parallel/results.csv` | `data/runs/20261031_par3_parallel/results.md` | none (session stopped before the snapshot was written; the global ledger covers it) |
 | Parallel follow-up 4 | `data/runs/20261031_par4_parallel_lead6/sent.csv` | `data/runs/20261031_par4_parallel_lead6/landed.csv` | `data/runs/20261031_par4_parallel_lead6/blocks.csv` | `data/runs/20261031_par4_parallel_lead6/windows.csv` | `data/runs/20261031_par4_parallel_lead6/results.csv` | `data/runs/20261031_par4_parallel_lead6/results.md` | `data/runs/20261031_par4_parallel_lead6/spend_ledger_snapshot.json` |
 | Pooled parallel (offline) | concatenated | concatenated | concatenated | concatenated | `data/runs/pooled_parallel_all/results.csv` | `data/runs/pooled_parallel_all/results.md` | none |
 | Pooled follow-up only (offline) | concatenated | concatenated | concatenated | concatenated | `data/runs/pooled_parallel_followup/results.csv` | `data/runs/pooled_parallel_followup/results.md` | none |
