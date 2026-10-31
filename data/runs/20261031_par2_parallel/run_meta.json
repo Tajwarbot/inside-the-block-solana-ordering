@@ -1,0 +1,42 @@
+{
+ "created_at": "2026-10-31T12:04:40Z",
+ "cluster": "mainnet",
+ "args": {
+  "run_dir": "data/runs/20261031_par2_parallel",
+  "cmd": "run",
+  "live": true,
+  "mainnet": true,
+  "cap_sol": 0.035,
+  "fee_levels": [
+   0,
+   1000,
+   10000,
+   100000,
+   1000000
+  ],
+  "cu_limit": 21000,
+  "lead_slots": 2,
+  "send_mode": "parallel",
+  "gap_ms": 20,
+  "payer_arm": "alternate",
+  "max_bursts": 200
+ },
+ "argv": [
+  "run",
+  "--live",
+  "--mainnet",
+  "--cap-sol",
+  "0.035",
+  "--payer-arm",
+  "alternate",
+  "--max-bursts",
+  "200",
+  "--lead-slots",
+  "2",
+  "--send-mode",
+  "parallel"
+ ],
+ "git_commit": "adace40",
+ "obp_version": "0.2.0",
+ "solders_version": "0.26.0"
+}

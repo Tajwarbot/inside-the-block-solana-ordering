@@ -1,6 +1,6 @@
 # obp results
 
-- Analysis generated (UTC): 2026-10-25T16:37:55Z
+- Analysis generated (UTC): 2026-10-31T13:40:32Z
 - Measurement send window (UTC): 2026-10-25T16:15:51Z to 2026-10-25T16:36:51Z
 - Plan created (UTC): 2026-10-25T16:15:44Z
 - Rows: sent=500, landed=0, block_txs=0
@@ -10,13 +10,13 @@ Permutation p-values use a two-sided null; small samples give weak evidence.
 
 ## Test plan: primary vs exploratory
 
-**Pre-registered primary test:** pooled `tau_fee` per client label on the **same-payer** arm, using only **descending + shuffled** bursts and only rows with `in_target_window=True` and `leader_is_target=True`. Ascending bursts are excluded from the primary test because there fee order equals send order (confounded); asc is a consistency check only. Holm correction is applied across the per-label primary p-values below.
+**Pre-registered primary test:** pooled `tau_fee` per client label on the **same-payer** arm, using only **ascending + shuffled** bursts and only rows with `in_target_window=True` and `leader_is_target=True`. Descending bursts are excluded from the primary test because there fee order equals send order (confounded); desc is a consistency check only. Holm correction is applied across the per-label primary p-values below, separately for H1 (fee) and H2 (send).
 
-Everything else (multi-payer arm, ascending mode, per-burst, whole-block, landing rates) is **exploratory**. Groups with fewer than 3 of our transactions in the same block are dropped. That selection can bias the ordering sample toward bursts whose higher-fee transactions land more often (see the target-window landing distribution below). With a five-transaction burst the smallest attainable two-sided per-burst permutation p is 1/60 ≈ 0.017; pooled tests use 2000 permutations, so their floor is 0.0005.
+Everything else (multi-payer arm, descending mode, per-burst, whole-block, landing rates) is **exploratory**. Groups with fewer than 3 of our transactions in the same block are dropped. That selection can bias the ordering sample toward bursts whose higher-fee transactions land more often (see the target-window landing distribution below). With a five-transaction burst the smallest attainable two-sided per-burst permutation p is 1/60 ≈ 0.017; pooled tests use 2000 permutations, so their floor is 0.0005.
 
 ## Verdict per label (H1 / H2 / H0)
 
-All verdict inputs use the same-payer arm only. H1 = pooled tau_fee > 0 with Holm-adjusted p < 0.05 on descending+shuffled bursts AND tau_fee > 0 in descending bursts alone. H2 = pooled tau_send > 0 with p < 0.05 on descending+shuffled bursts AND tau_send > 0 in descending bursts alone. If both hold the verdict is **mixed**; if neither holds it is **no rule detected (H0 not rejected)**. Ascending bursts are a consistency check only.
+All verdict inputs use the same-payer arm only. H1 = pooled tau_fee > 0 with Holm-adjusted p < 0.05 on ascending+shuffled bursts AND tau_fee > 0 in ascending bursts alone. H2 = pooled tau_send > 0 with Holm-adjusted p < 0.05 on ascending+shuffled bursts AND tau_send > 0 in ascending bursts alone. If both hold the verdict is **mixed**; if neither holds it is **no rule detected (H0 not rejected)**; zero primary groups gives **insufficient data**. Descending bursts are a consistency check only.
 
 _No same-block groups with >=3 target-window txs._
 
@@ -40,7 +40,7 @@ _No landed data._
 
 ## Landing and timing
 
-Live timing uses live-only denominators. Dry-run timing is shown in separate columns so it cannot inflate a live rate. `on_time` means the per-tx estimated send slot was before `window_start`; `in_window_at_send` means it was before `window_start + 4`.
+Live timing uses live-only denominators. Dry-run timing is shown in separate columns so it cannot inflate a live rate. `on_time` means the per-tx estimated send slot was before `window_start`; `in_window_at_send` means the send was not after the window (`est_slot_at_send < window_start + 4`). The clearer `send_phase` column is `early` when `est_slot_at_send < window_start`, `inside` when it is in the four-slot window, and `late` otherwise.
 
 | label | sent | live sent | landed | landing rate | live on_time | on_time rate | live in_window | in_window rate | mean live send_offset | dry sent | dry on_time | dry on_time rate | dry in_window | dry in_window rate |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|

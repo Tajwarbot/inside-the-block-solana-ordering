@@ -7,13 +7,13 @@ order. Post-Alpenglow mainnet slot time is about **0.212 s**, so a 4-slot leader
 **0.85 s**.
 
 Default is dry run. `run` and `fund` send nothing without `--live`; mainnet live runs also need
-`--mainnet`. The spend cap is hard-coded at 0.05 SOL.
+`--mainnet`. `--cap-sol` defaults to 0.04 SOL; 0.05 SOL is a hard ceiling no flag can raise.
 
-## Results (measured 2026-10-25 UTC)
+## Results (measured 2026-10-25 and 2026-10-31 UTC)
 
-Main sequential session: 125 bursts, 625 txs, all 625 landed. Send order decided block and position for every client label and fee had no visible effect. A sequential burst spans about two slots (median 413.8 ms), so the five fees never competed in one scheduler batch. This does not show that schedulers ignore fees.
+Main sequential session: 125 bursts, 625 txs, all 625 landed. Send order decided block and position (`tau_send` +0.889 to +1.000 on the primary set, Holm-significant for 6 of 8 labels; Agave and FireBAM had 2 bursts each) and fee had no visible effect. A sequential burst spans about two slots (median 413.8 ms), so the five fees never competed in one scheduler batch. This does not show that schedulers ignore fees.
 
-The exploratory second session used `--send-mode parallel` (66 bursts, 330 txs, 325 landed; the 5 misses were send errors at the public RPC). Higher fee tended to come first for Firedancer, HarmonicAgave, HarmonicFiredancer and same-payer AgaveBam; JitoLabs, FireBAM and Rakurai were not significant; vanilla Agave went the other way on 5 bursts (weak). Whole-block priority ordering was near zero.
+Follow-up design (chosen after the main run, not pre-registered): `--send-mode parallel`, four sessions on two days. 2026-10-25 19:07 UTC: 66 bursts, 325/330 landed. 2026-10-31 12:04 to 13:30 UTC: 221 bursts, 1,062/1,105 landed, but the public RPC took about 1.25 s per send that day, so only 381 landed in the target window. Pooled over all four sessions on the pre-registered primary set, higher fee came first with Holm p < 0.05 for AgaveBam (5 bursts), HarmonicAgave (4) and HarmonicFiredancer (10). Firedancer (4) and JitoLabs (9) were positive but not significant; FireBAM, Rakurai and Agave showed no rule. Whole-block priority ordering was near zero for every label.
 
 Tables, p-values and caveats: [REPORT.md](REPORT.md).
 
@@ -532,12 +532,14 @@ Worst case per burst: 5 x 5,000 base + 23,331 priority = **48,331 lamports**.
 |---|---:|---:|
 | Pilot, 10 bursts | 50 | ~0.0005 |
 | Main run, 720 txs (12 validators x 6 bursts x 2 arms) | 720 | ~0.0070 |
-| Repeat day, half size | 360 | ~0.0035 |
+| Repeat day, half size (planned, not run) | 360 | ~0.0035 |
 | Funding four extra payer keys | 4 | ~0.00002 |
-| **Total fees burned** | | **~0.011** |
+| **Total fees burned (plan)** | | **~0.011** |
+
+Actual: all sessions including four parallel ones burned 19,760,964 lamports (0.01976 SOL) of 0.045 SOL funded; 25,239,036 lamports remain in the five payers.
 
 The multi-payer arm uses five payer accounts (one per fee level). Their first funding also
-needs rent-exempt deposits of about 0.0045 SOL. That is not burned; it is refundable when the
+needs rent-exempt deposits of about 0.0045 SOL (the run moved 0.003 SOL into each, 0.012 SOL total). That is not burned; it is refundable when the
 accounts are emptied.
 
 ## Raw data dictionary
