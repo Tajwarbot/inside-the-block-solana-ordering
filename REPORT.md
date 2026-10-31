@@ -6,6 +6,15 @@
 
 **Measurement network:** Solana mainnet-beta, post-Alpenglow (upgrade on 2026-10-21)
 
+## Key findings
+
+- Sequential sends (main run, 125 bursts, 625/625 landed): block position follows send order. `tau_send` is +0.889 to +1.000 on the primary set for all 8 labels; fee has no visible effect because a burst spans about 414 ms, two slots.
+- Parallel sends (4 sessions, 2 days, follow-up design): higher fee comes first with Holm p < 0.05 for HarmonicFiredancer (+0.467, 10 bursts), AgaveBam (+0.747, 5) and HarmonicAgave (+0.650, 4).
+- Firedancer (+0.433, 4 bursts) and JitoLabs (+0.207, 9) lean the same way but are not significant. Agave, FireBAM and Rakurai show no rule. Samples are small for every label.
+- Fee level did not buy landing: in the main run each of the 5 fee levels landed 125/125, including zero priority fee.
+- Whole-block priority ordering across all transactions in our blocks is near zero for every label: -0.091 to +0.058 per label on 2026-10-25, -0.030 to +0.045 in the pooled parallel blocks.
+- The send path matters more than the fee: on 2026-10-31 the public RPC took a median 1.25 s per send, and with a 2-slot lead only 175 of 558 landed transactions reached the target leader.
+
 ## Measurement dates
 
 All times are UTC. A session is one `OBP_DATA=data/runs/<YYYYMMDD>_<name>` directory.
@@ -386,6 +395,59 @@ Per-client summary:
 | HarmonicFiredancer | H2 markers, 4 bursts | H1 fee, +0.467, 10 bursts, Holm 0.011 | clearest fee order, held on both days |
 | JitoLabs | H2 markers, 6 bursts | +0.207, 9 bursts, Holm 0.968 | weak fee hint, not significant |
 | Rakurai | H2 markers, 3 bursts | 1 burst | send order sequential only |
+
+## Figures
+
+Built by `scripts/make_figures.py` from committed CSVs (`bash scripts/reproduce.sh` rebuilds them).
+
+![Per-label tau with 95% bootstrap CI](figures/tau_by_label.png)
+
+Per-burst Kendall tau on the primary set (same payer, ascending + shuffled, target window and target leader), mean per label with a 95% bootstrap CI over bursts (2,000 resamples, seed 0). Blue: main sequential session. Orange: four parallel sessions pooled. Labels with one burst have no interval. Sequential `tau_send` sits at +1 for every label; parallel `tau_fee` is above zero for most labels with wide intervals.
+
+![Landing slot offset by session](figures/landing_offset.png)
+
+Landing slot minus planned window start, per landed transaction. The shaded band is the 4-slot target window. On 2026-10-25 almost everything landed in the window. On 2026-10-31 lead 2 landed 3 to 10 slots late; lead 6 moved the mass into the window but spread it over 10 slots.
+
+![Burst span vs slot time](figures/burst_span.png)
+
+Time from the first send start to the last send done in each burst, against 1, 2 and 4 slots of 212 ms. Whiskers are 1.5 IQR; outliers hidden. A sequential burst takes about two slots, so its five fees never meet in one scheduler batch. A parallel burst on 2026-10-25 fit inside one slot. On 2026-10-31 slow HTTP replies stretched the parallel span to a median of about 1.5 s; the five sends still started within a median 6.4 ms (follow-up 2) and 7.3 ms (follow-up 4) of each other; the replies, and likely the forwarding, were slow.
+
+## Verification
+
+Every transaction is a public SPL Memo transaction on mainnet. The `signature` column of each `sent.csv` lists all of them. One sample per label and session, landed in the target window with the target leader:
+
+| Label | Session | Slot | Fee (micro/CU) | Block index | Signature |
+|---|---|---:|---:|---:|---|
+| Firedancer | main seq | [461359096](https://solscan.io/block/461359096) | 0 | 91 | [5yTu1vjDvK6TudWF...](https://solscan.io/tx/5yTu1vjDvK6TudWF2paJNLQ6nfZvwLuojGCgwRaUsL1BpeULaz7hV1pov6fQAKJqvjf59TWXYr3nnUWVTbQSQGgH) |
+| HarmonicFiredancer | main seq | [461359124](https://solscan.io/block/461359124) | 1,000,000 | 4 | [5D8YnV318R9uy4hk...](https://solscan.io/tx/5D8YnV318R9uy4hkts5Uyix8Tnt9Ueffw87niMUiLRY93TmgWdj5wf9AWFNpK45Vk1uESr4sPSwfSzeSDnBfFkgK) |
+| AgaveBam | main seq | [461359193](https://solscan.io/block/461359193) | 0 | 200 | [5jD43CM5S9b3UjJB...](https://solscan.io/tx/5jD43CM5S9b3UjJBv58qWWe4j2sABV7BgHRWk4ExV3acTSyWXbAXkqHm8uqPGdM6fhgptBtR7gh2n4wpRyUTN77H) |
+| HarmonicAgave | main seq | [461359250](https://solscan.io/block/461359250) | 0 | 7 | [2SNNRgBwjGSdPYCB...](https://solscan.io/tx/2SNNRgBwjGSdPYCBKZTrqaJZsq1XKMHF4bg1atWWQ6Gz7gwSX2yFj4vKL5vtqLeN2e3rmkW3P9CsirKHWFnjmFiY) |
+| FireBAM | main seq | [461359313](https://solscan.io/block/461359313) | 1,000,000 | 32 | [wgxeSi1DGTBR9USE...](https://solscan.io/tx/wgxeSi1DGTBR9USEfa5cNT1YLdxv5pCffddqxnks5WiyEq7bAfRhnmsCqcKh2dv667aX8mEczqQVUx9GWdNwLV8) |
+| JitoLabs | main seq | [461359626](https://solscan.io/block/461359626) | 0 | 192 | [4jG8qjx3ePFApYWs...](https://solscan.io/tx/4jG8qjx3ePFApYWsF4DS9PU5Ds9FgAFbsVSwHzMG4rsn84qE9S3iBY5pZ8V6pZ3caTPaAg6EtJ5WhoLnoNcXeTtC) |
+| Agave | main seq | [461359796](https://solscan.io/block/461359796) | 0 | 397 | [4jBx4ANFC6L63w5D...](https://solscan.io/tx/4jBx4ANFC6L63w5DaeShnHhQSVVmrPnWhjSkDMUz77TT7EYHp6DBidAZUhtyABeYdsgUE1ffCSarGqjpnJR9nn2k) |
+| Rakurai | main seq | [461361645](https://solscan.io/block/461361645) | 1,000,000 | 190 | [23Bceo9HwSP16E5g...](https://solscan.io/tx/23Bceo9HwSP16E5g4e6QwmvUkTs53oEzj8C6x7XP32MVTjovkFZ2VMEYJbQ5khn6RLD5QiPVs1ajDEbW9PfZmXS3) |
+| FireBAM | parallel 10-25 | [461370096](https://solscan.io/block/461370096) | 0 | 205 | [2xoGAr8BwgQJhKTb...](https://solscan.io/tx/2xoGAr8BwgQJhKTbxzoPaihvG6YFiHqNj3nSwSSYbrCzacoBmQKc9yQogKARWv2edPgok6K2R5WCFEvUch5DoA4X) |
+| Firedancer | parallel 10-25 | [461370112](https://solscan.io/block/461370112) | 1,000,000 | 114 | [4nBrqGyPR9txSzqQ...](https://solscan.io/tx/4nBrqGyPR9txSzqQcbrPmRkuZ81wXtEzjRJxzPAWq4QKGET9bWvj8XG158U8nVZDnZZgF2SkmA7QU6jVCqvrGuap) |
+| Agave | parallel 10-25 | [461370169](https://solscan.io/block/461370169) | 1,000 | 45 | [4ZvJYiM3vBQ5yaMv...](https://solscan.io/tx/4ZvJYiM3vBQ5yaMvpSwSWzzDicgvJhg41HV83vcEyQ3WBCsVv4b6ERrFHidwLmv1NqJYtj1KQu7jJABpft5uWbhk) |
+| Rakurai | parallel 10-25 | [461370204](https://solscan.io/block/461370204) | 0 | 72 | [4ePXSnJmybLMh8Vx...](https://solscan.io/tx/4ePXSnJmybLMh8VxEpf4W79QxdzCVwMZ4zbRiakQgzE1A1ufWswHJ46grDosjgZnqzgdhuX8Wg7a4Ms1btnnwTw8) |
+| HarmonicAgave | parallel 10-25 | [461370277](https://solscan.io/block/461370277) | 100,000 | 19 | [2zg1tqQ6RYAi2eCN...](https://solscan.io/tx/2zg1tqQ6RYAi2eCNE4L2K84rmvMPogruBHbXedCTfDUa1YcebaoDEmJctZAxUjywe9P5SHAQWdUtPiwRoKomAiNT) |
+| JitoLabs | parallel 10-25 | [461370373](https://solscan.io/block/461370373) | 0 | 36 | [2cv8LwGnLrkXhd1S...](https://solscan.io/tx/2cv8LwGnLrkXhd1SFiXnU77zBiGbUhYFUyWPTYsygavEzgnNAiBeGk6q2BQPpW4QeJnmpnnUCaHeGEo3giWAvuv1) |
+| HarmonicFiredancer | parallel 10-25 | [461370456](https://solscan.io/block/461370456) | 10,000 | 502 | [5C84u5de2cCHfdvv...](https://solscan.io/tx/5C84u5de2cCHfdvvC5KGYYLYHG4XTSVqYXsKxacoufqUW3w6Ehc2irqCQNwdioaacT2ESmAoi5vrgg8BZQJkij8S) |
+| AgaveBam | parallel 10-25 | [461370468](https://solscan.io/block/461370468) | 1,000,000 | 55 | [3w9WtmktMp6awo4d...](https://solscan.io/tx/3w9WtmktMp6awo4djuAqwC4h1gbQheYt7A7UoSd6xowhLwPsLyMDSKLJd4gNdfEkXUKutJUBEtmjRKprvEuQmbje) |
+| AgaveBam | parallel 10-31 lead 6 | [463699929](https://solscan.io/block/463699929) | 0 | 98 | [2d7TXxyxvPzdX4mx...](https://solscan.io/tx/2d7TXxyxvPzdX4mx9GK35GubHnfi1z8gV2ANxphxMuKB9Pv443omDKvSXoVKMd8fixf7NHS29guSdcNc8vLs4XGx) |
+| HarmonicAgave | parallel 10-31 lead 6 | [463699972](https://solscan.io/block/463699972) | 1,000 | 81 | [juBDXRMuzxcyw3gs...](https://solscan.io/tx/juBDXRMuzxcyw3gs4H7rJqDK5bu8jCAZ26FzNHYDCGty6jhguWUED2pc1HVvie6t8NW17JpGh2Jd5hoEc7ogtgJ) |
+| HarmonicFiredancer | parallel 10-31 lead 6 | [463700005](https://solscan.io/block/463700005) | 1,000 | 7 | [5xgSBzD4YZ6MwVdx...](https://solscan.io/tx/5xgSBzD4YZ6MwVdxkugiTUiSeAHsSX7SrXsrF38TQPtbBGboP1SKrHXWq44tR8zS1yYHedcCGt8cdtUtwNkTvNXy) |
+| Agave | parallel 10-31 lead 6 | [463700099](https://solscan.io/block/463700099) | 10,000 | 77 | [4hAGBjto6ipK7nc4...](https://solscan.io/tx/4hAGBjto6ipK7nc4Psx7tH55megzB3z2hh1uzSB6ZFv2nEa4hK3gW2ymU6DQ59S7tsGzpq3FELNXjFPZddcjWJt7) |
+| Rakurai | parallel 10-31 lead 6 | [463700195](https://solscan.io/block/463700195) | 1,000,000 | 142 | [27cujSFS4uLjRpYd...](https://solscan.io/tx/27cujSFS4uLjRpYdSwhTY2Ge2e2QQfpmBJHDeRgFMtWz1R4LKgDZG6sim5s7Y4jzBvH4x9yWSqcSHMxbrmr1dngS) |
+| FireBAM | parallel 10-31 lead 6 | [463700232](https://solscan.io/block/463700232) | 100,000 | 316 | [2w4hnjToFK63uxZF...](https://solscan.io/tx/2w4hnjToFK63uxZFambL1bniXLArpLGbHQScDYHk8NBrD2kAFZUd1Mk5SUSTXUjrh6QqvwwSSWMqhtyRiHHbs6Dp) |
+| JitoLabs | parallel 10-31 lead 6 | [463700441](https://solscan.io/block/463700441) | 0 | 199 | [28zy2CkvnqUCLchY...](https://solscan.io/tx/28zy2CkvnqUCLchYNNDYy3oYS8gJ8ijqjFNXfXnPmS7Bs7xnXXUHgWTXttiFeSvsyqPYoE4VGAzX7Z8ZqcND1ZJG) |
+| Firedancer | parallel 10-31 lead 6 | [463700746](https://solscan.io/block/463700746) | 10,000 | 138 | [2b6nKVWMTMVs53XR...](https://solscan.io/tx/2b6nKVWMTMVs53XRai6cZUE79LxqCBqpHtnRQGr26nKb7CWsdp2yVBo1e29huwAPufncVhCKR6SVdnXsuzGqpXbY) |
+| Frankendancer | parallel 10-31 lead 6 | [463700911](https://solscan.io/block/463700911) | 1,000,000 | 65 | [2YWYmvL8gV7twXVU...](https://solscan.io/tx/2YWYmvL8gV7twXVUCxtv8t35namhHZwQtzvgtBzDBAPSUdNGqkgg9EN9Nn6WFoVfUqC4rqu1ovfkNhVv2aUQnJ7s) |
+| JitoLabs+BAM | parallel 10-31 lead 6 | [463704554](https://solscan.io/block/463704554) | 10,000 | 280 | [Udzuc5GmeTcYWQ1q...](https://solscan.io/tx/Udzuc5GmeTcYWQ1qrEmvmrtDei8hoQ824bNbs4r3ep4e27Bu4DUbiajEvbNH996pgVMoEouWTbn9D6vbSe4BX45) |
+
+Checksums: `data/CHECKSUMS.sha256` holds SHA-256 sums of every committed raw CSV (`sent`, `landed`, `blocks`, `windows`, `validators`, per session). `sha256sum -c data/CHECKSUMS.sha256` checks them; `scripts/reproduce.sh` runs that check first, then rebuilds every `results.md`, `results.csv`, the pooled tables and the figures offline. `tests/test_reproduce.py` runs the rebuild in a temp copy and asserts the outputs match the committed files (ignoring only the generation timestamp line).
+
+To check a sample independently: open the Solscan link, confirm the memo text matches the `memo` column, the slot matches `slot`, and the priority fee matches `cu_price`.
 
 ## How to read the tau tables
 

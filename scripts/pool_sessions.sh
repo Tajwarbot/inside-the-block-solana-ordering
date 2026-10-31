@@ -9,4 +9,4 @@ for f in landed sent blocks windows; do
   done
 done
 echo "$@" > $OUT/SOURCES.txt
-OBP_LEDGER_DIR=data .venv/bin/python -m obp analyze --run-dir $OUT
+"${PY:-.venv/bin/python}" -m obp analyze --run-dir $OUT

@@ -9,13 +9,24 @@ order. Post-Alpenglow mainnet slot time is about **0.212 s**, so a 4-slot leader
 Default is dry run. `run` and `fund` send nothing without `--live`; mainnet live runs also need
 `--mainnet`. `--cap-sol` defaults to 0.04 SOL; 0.05 SOL is a hard ceiling no flag can raise.
 
+## Key findings
+
+- Sequential sends (main run, 125 bursts, 625/625 landed): block position follows send order. `tau_send` is +0.889 to +1.000 on the primary set for all 8 labels; fee has no visible effect because a burst spans about 414 ms, two slots.
+- Parallel sends (4 sessions, 2 days, follow-up design): higher fee comes first with Holm p < 0.05 for HarmonicFiredancer (+0.467, 10 bursts), AgaveBam (+0.747, 5) and HarmonicAgave (+0.650, 4).
+- Firedancer (+0.433, 4 bursts) and JitoLabs (+0.207, 9) lean the same way but are not significant. Agave, FireBAM and Rakurai show no rule. Samples are small for every label.
+- Fee level did not buy landing: in the main run each of the 5 fee levels landed 125/125, including zero priority fee.
+- Whole-block priority ordering across all transactions in our blocks is near zero for every label: -0.091 to +0.058 per label on 2026-10-25, -0.030 to +0.045 in the pooled parallel blocks.
+- The send path matters more than the fee: on 2026-10-31 the public RPC took a median 1.25 s per send, and with a 2-slot lead only 175 of 558 landed transactions reached the target leader.
+
 ## Results (measured 2026-10-25 and 2026-10-31 UTC)
 
 Main sequential session: 125 bursts, 625 txs, all 625 landed. Send order decided block and position (`tau_send` +0.889 to +1.000 on the primary set, Holm-significant for 6 of 8 labels; Agave and FireBAM had 2 bursts each) and fee had no visible effect. A sequential burst spans about two slots (median 413.8 ms), so the five fees never competed in one scheduler batch. This does not show that schedulers ignore fees.
 
 Follow-up design (chosen after the main run, not pre-registered): `--send-mode parallel`, four sessions on two days. 2026-10-25 19:07 UTC: 66 bursts, 325/330 landed. 2026-10-31 12:04 to 13:30 UTC: 221 bursts, 1,062/1,105 landed, but the public RPC took a median 0.8 to 1.3 s per send that day, so only 381 landed in the target window. Pooled over all four sessions with the pre-registered filter (exploratory for this design), higher fee came first with Holm p < 0.05 for AgaveBam (5 bursts), HarmonicAgave (4) and HarmonicFiredancer (10). Firedancer (4) and JitoLabs (9) were positive but not significant; FireBAM, Rakurai and Agave showed no rule. Whole-block priority ordering was near zero for every label.
 
-Tables, p-values and caveats: [REPORT.md](REPORT.md).
+Tables, p-values, figures, sample signatures with explorer links and caveats: [REPORT.md](REPORT.md).
+
+Rebuild everything offline from committed data: `make reproduce` (or `bash scripts/reproduce.sh`). It checks `data/CHECKSUMS.sha256`, regenerates every `results.md`, the pooled tables and `figures/*.png`.
 
 ## What it measures
 
