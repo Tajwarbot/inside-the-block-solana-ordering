@@ -8,9 +8,11 @@
 - **Sent all at once, higher fee goes first on some clients.** Holm p < 0.05 for HarmonicFiredancer (+0.467, 10 bursts), AgaveBam (+0.747, 5) and HarmonicAgave (+0.650, 4). Firedancer and JitoLabs lean the same way but are not significant. Agave, FireBAM and Rakurai show no rule.
 - **Fee did not buy landing.** Each of the 5 fee levels, zero included, landed 125/125 in the main run.
 - **Across whole blocks, priority ordering is near zero** for every label (-0.091 to +0.058).
-- **The send path matters more than the fee.** On 2026-10-31 the public RPC took a median 1.25 s per send and only 175 of 558 landed transactions reached the target leader.
+- **The send path matters more than the fee.** On 2026-10-31 the public RPC took a median 1.25 s per send and in the first session that day only 175 of 558 landed transactions reached the target leader.
 
 Samples per label are small for the parallel design, and that design was chosen after the main run, so treat those results as exploratory. Full tables, p-values and caveats are in [REPORT.md](REPORT.md).
+
+**Why this can differ from "reward per cost unit" results.** Agave style schedulers rank waiting transactions by reward per cost unit, and entries that deliver all transactions to the leader at the same moment (for example over QUIC) can see that rule directly. Each of our sequential bursts was spread over about 414 ms, so the scheduler never held them together and arrival order decided. When we did send in parallel, the fee signal showed up on the clients listed above, which fits the same rule rather than contradicting it. Our fee ladder keeps the CU limit fixed, so we cannot tell fee per CU from total fee.
 
 ![Per-label tau with 95% bootstrap CI](figures/tau_by_label.png)
 
@@ -38,8 +40,8 @@ docker compose up
 
 # Python 3.12
 python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
-make test          # pytest suite
-make reproduce     # rebuild every result table and figure offline from committed data
+make test          # pytest suite (no make? .venv/bin/python -m pytest -q)
+make reproduce     # or: PY=.venv/bin/python bash scripts/reproduce.sh, offline rebuild checked against data/CHECKSUMS.sha256
 
 # Live mainnet run (needs keys in ./keys, capped by --cap-sol, 0.05 SOL hard ceiling)
 OBP_RUN_ID=20261028_main OBP_BURSTS=0 \

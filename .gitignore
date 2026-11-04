@@ -9,3 +9,5 @@ data/*
 .brief/
 data/runs/*/leader_schedule_cache.json
 !data/spend_ledger_mainnet.json
+!data/CHECKSUMS.sha256
+!data/spend_ledger_mainnet.json
