@@ -500,6 +500,7 @@ The committed `results.md` for dry run d was regenerated on 2026-10-31 with the 
 ## Limitations
 
 - Network path and scheduler are not separated. The RPC forwarder, SWQoS and TPU admission add uncontrolled jitter.
+- The clearest next step is sending over QUIC straight to the target leader's TPU address instead of a public RPC. That would remove the RPC forwarding delay that pushed many 2026-10-31 transactions past the target window, and give the parallel design larger per-label samples.
 - Ledger entry order is not the same as real execution order on parallel threads.
 - Leader-side relays and block engines (BAM, Harmonic, Jito) are not isolated from the client scheduler by this design.
 - Samples per validator and per client are small. Every conclusion states the number of bursts and same-block groups behind it.
